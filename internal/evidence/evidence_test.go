@@ -49,6 +49,14 @@ func Added() string {
 	if err != nil {
 		t.Fatalf("Preview() error = %v", err)
 	}
+	wantLimits := evidence.Limits{
+		MaxFiles:        10,
+		MaxDeclarations: 20,
+		MaxExcerptBytes: 16 * 1024,
+	}
+	if got.AppliedLimits != wantLimits {
+		t.Fatalf("AppliedLimits = %#v, want %#v", got.AppliedLimits, wantLimits)
+	}
 
 	wantRoot, err := filepath.EvalSymlinks(repo)
 	if err != nil {

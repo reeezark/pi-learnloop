@@ -92,6 +92,7 @@ type Result struct {
 	RepositoryRoot string
 	BaseRevision   string
 	HeadRevision   string
+	AppliedLimits  Limits
 	Files          []File
 	Truncation     Truncation
 }
@@ -193,6 +194,7 @@ func Preview(ctx context.Context, request Request) (Result, error) {
 		RepositoryRoot: root,
 		BaseRevision:   base,
 		HeadRevision:   head,
+		AppliedLimits:  request.Limits,
 	}
 	for _, changed := range files {
 		if len(result.Files) == request.Limits.MaxFiles {

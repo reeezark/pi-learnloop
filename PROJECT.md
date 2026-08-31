@@ -2,7 +2,7 @@
 
 Pi LearnLoop is a planned local learning companion for Go developers using the Pi coding agent. After a developer manually selects one or more Agent-produced changesets, the tool is intended to analyze the real Go code changes and conduct a short, evidence-backed technical interview. The purpose is to verify that the developer can explain the code rather than merely accept AI-generated output.
 
-Current repository status: Agent-development governance and the first end-to-end evidence-preview slice. The `pi-learnloop daemon` command exposes explicit commit-range and working-tree previews through the versioned local protocol accepted in ADR-0002. A thin Pi 0.84.x TypeScript extension now registers the manual `/learn` command, performs protected daemon discovery, submits the explicit selection, and renders files, symbols, approximate excerpt bytes, and truncation. No model call, persistence, production prompt, live evaluator, SSE stream, or learning workflow has been implemented.
+Current repository status: Agent-development governance, the first end-to-end evidence-preview slice, and an internal evaluator-ready EvidenceBundle module. The `pi-learnloop daemon` command exposes explicit commit-range and working-tree previews through the versioned local protocol accepted in ADR-0002. A thin Pi 0.84.x TypeScript extension registers the manual `/learn` command, performs protected daemon discovery, submits the explicit selection, and renders files, symbols, approximate excerpt bytes, and truncation. The internal bundle builder can project exactly that bounded result into deterministic citation items and a hashed manifest, but no product entry point invokes it. No model call, persistence, production prompt, live evaluator, SSE stream, or learning workflow has been implemented.
 
 # Project Goals
 
@@ -38,7 +38,7 @@ The Go module uses only the standard library and the local `git` executable. The
 | Pi integration | Thin TypeScript Pi extension | Manual `/learn` evidence preview implemented and tested against the Pi 0.84.3 type interface |
 | Agent integration | Pi RPC with an isolated read-only evaluator Session | Planned |
 | Storage | Local SQLite in WAL mode | Planned |
-| Go analysis | `go/parser`, later `go/types` and `golang.org/x/tools/go/packages` | Syntax-level changed-declaration mapping implemented with `go/parser`; type/dependency analysis remains planned |
+| Go analysis | `go/parser`, later `go/types` and `golang.org/x/tools/go/packages` | Syntax-level changed-declaration mapping and an evaluator-ready bundle projection are implemented; type/dependency analysis remains planned |
 | Extension transport | Local HTTP plus later SSE on `127.0.0.1` | Versioned authenticated HTTP evidence-preview request/response implemented; SSE not implemented |
 | Supported platform | macOS ARM64 and AMD64 | macOS ARM64 verified locally; AMD64 remains unverified |
 
@@ -64,6 +64,8 @@ The repository currently contains Agent-development governance, evaluator-develo
 │   ├── runtime.go
 │   └── server.go
 ├── internal/evidence/
+│   ├── bundle.go
+│   ├── bundle_test.go
 │   ├── evidence.go
 │   └── evidence_test.go
 ├── extensions/
@@ -111,7 +113,7 @@ There is currently no production prompt, database, release publication, or CI co
 
 The implemented core modules and adapters are:
 
-- `internal/evidence`: one deep module whose `Preview` interface resolves explicit Git selections, parses zero-context diffs, maps changed lines to Go declarations, applies caller-provided evidence limits, and returns stable errors plus explicit omission/truncation metadata. Tests exercise real temporary Git repositories rather than an invented Git port.
+- `internal/evidence`: one deep module whose `Preview` interface resolves explicit Git selections, parses zero-context diffs, maps changed lines to Go declarations, applies and retains caller-provided evidence limits, and returns stable errors plus explicit omission/truncation metadata. Its pure `BuildBundle` interface accepts only that bounded result and produces deterministic `E001`-style citations, content hashes, exact byte counts, copied coverage metadata, and a content-addressed manifest without reading more source or exposing the absolute repository root. Tests exercise both the in-memory seam and real temporary Git repositories rather than an invented Git port.
 - `internal/daemon`: one deep local-runtime module whose `Run` interface owns protected runtime discovery, per-start Instance Tokens, single-instance locking, loopback HTTP lifecycle, strict protocol decoding, stable error translation, and graceful shutdown. Its HTTP adapter delegates all Git and Go evidence behavior to `internal/evidence`.
 - `cmd/pi-learnloop`: the minimal public executable adapter. It accepts only `pi-learnloop daemon`, installs `SIGINT`/`SIGTERM` cancellation, and exposes no flags that weaken accepted security defaults.
 - `extensions/lib/daemon-client.ts`: one deep local client module whose `preview(repository, selection)` interface hides protected runtime-file validation, exact loopback URL validation, instance verification, proxy-independent HTTP, Instance Token authentication, bounded response decoding, v1 schema validation, and one discovery-race retry.
@@ -123,7 +125,7 @@ The remaining target architecture identifies these unimplemented responsibilitie
 - Later Pi extension behavior: explicit Session selection, question display, and answer collection beyond the implemented Git-selection preview.
 - Later daemon capabilities: SSE event delivery, durable worker coordination, and learning lifecycle management beyond the implemented evidence-preview request.
 - Changeset capture: association among repositories, Pi Sessions, commits, and working-tree changes.
-- Go evidence enrichment: type/dependency analysis and evaluator-ready bundle construction beyond the implemented syntax-level preview.
+- Go evidence enrichment: type/dependency analysis and any expansion beyond the bytes represented in the current preview. The syntax-level evaluator-ready bundle is implemented internally but is not connected to a product or evaluator adapter.
 - Assessment engine: isolated read-only Pi evaluator, structured questions, follow-up, and evaluation.
 - Persistence: SQLite migrations, durable jobs, leases, event cursors, concepts, questions, and answers.
 
@@ -148,6 +150,8 @@ internal/evidence
 SQLite jobs and isolated Pi RPC evaluator (planned)
 ```
 
+`internal/evidence.BuildBundle` is an implemented but currently unconnected in-memory seam after `Preview`. It deliberately has no repository path or context parameter, so it cannot read additional content after the user-visible preview. It is not a daemon protocol or persisted format.
+
 The Pi extension should remain thin. Business rules, persistence, analysis, and reliable execution belong in the Go daemon. The evaluator must be separated from the development Session and restricted to read-only evidence.
 
 # Main Data Flow
@@ -158,7 +162,8 @@ Implemented internal flow:
 2. The module resolves the canonical Git root and commit hashes.
 3. Git zero-context diffs identify changed Go files and new-side line ranges; untracked, non-ignored Go files are included for working-tree selections.
 4. `go/parser` maps changed ranges to functions, methods, types, interfaces, variables, and constants.
-5. The module returns stable ordering, bounded UTF-8 excerpts, truncation counts, and explicit reasons for changes that cannot map to new declarations.
+5. The module returns stable ordering, bounded UTF-8 excerpts, the exact applied limits, truncation counts, and explicit reasons for changes that cannot map to new declarations.
+6. For later evaluator use, the pure bundle builder validates the retained budget and structure, excludes empty evidence, assigns stable citations, hashes exact content and a canonical metadata-only manifest, and omits the absolute repository root. No current product flow calls this step.
 
 Implemented daemon flow:
 
@@ -174,11 +179,12 @@ Target end-to-end flow, not yet implemented:
 1. The user manually invokes `/learn`; there is no automatic reminder or background Session indexing.
 2. The user explicitly selects a Git changeset, or later an unreviewed Session after that capability is designed.
 3. The implemented extension and daemon produce the bounded, inspectable evidence preview.
-4. A later daemon creates an idempotent assessment job only after an explicit user continuation.
-5. An isolated Pi evaluator generates three questions from the approved evidence.
-6. The user answers in the Pi TUI; the evaluator may ask one targeted follow-up.
-7. The evaluator returns a structured result with evidence-backed weaknesses.
-8. The daemon stores the repository-scoped assessment result locally.
+4. Only after explicit user continuation, later orchestration passes that exact bounded result through the implemented bundle builder; it must not re-read or expand the evidence silently.
+5. A later daemon creates an idempotent assessment job.
+6. An isolated Pi evaluator generates three questions from the approved evidence.
+7. The user answers in the Pi TUI; the evaluator may ask one targeted follow-up.
+8. The evaluator returns a structured result with evidence-backed weaknesses.
+9. The daemon stores the repository-scoped assessment result locally.
 
 # External Dependencies
 
@@ -271,7 +277,7 @@ npm test
 
 The Agent validator checks four synthetic evaluator failure categories, the deny-by-default capability policy, stable asset versions, and privacy-safe run provenance without calling a model.
 
-Current Go evidence tests cover commit ranges, working-tree and untracked files, declaration kinds and method identity, rename/deletion outcomes, non-Go changes, malformed source, repository escape protection, stable error codes, and deterministic evidence limits.
+Current Go evidence tests cover commit ranges, working-tree and untracked files, declaration kinds and method identity, rename/deletion outcomes, non-Go changes, malformed source, repository escape protection, stable error codes, deterministic evidence limits, exact Preview-to-Bundle projection, citation ordering, test classification, canonical manifest hashing, privacy-safe path handling, and fail-closed budget/structure/insufficiency behavior.
 
 Current daemon integration tests cover loopback discovery, commit-range and working-tree previews through real Git repositories, fixed evidence caps, token authentication, Host/Origin/CORS defenses, strict JSON, size and media-type limits, stable safe errors, single-instance locking, runtime permissions, symlink rejection, token rotation, stale-state replacement, cancellation propagation, and shutdown cleanup. Command tests verify that no unsupported security-weakening arguments are accepted.
 
