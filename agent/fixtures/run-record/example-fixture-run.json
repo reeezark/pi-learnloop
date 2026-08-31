@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0.0",
+  "record_id": "example-fixture-run",
+  "created_at": "2026-08-31T13:00:00+08:00",
+  "task_id": "agent-development-foundation",
+  "adapter": {
+    "id": "deterministic-fixture",
+    "version": "1.0.0",
+    "kind": "fixture"
+  },
+  "prompt": {
+    "id": "unimplemented-placeholder",
+    "version": "0.0.0",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "policy": {
+    "id": "evaluator-capabilities",
+    "version": "1.0.0",
+    "sha256": "3d139c932c9296abe1f970f447e692556930476396243ccb021b34792138ab0b"
+  },
+  "model": {
+    "provider": "fixture",
+    "name": "deterministic-fixture",
+    "version": "1.0.0"
+  },
+  "inputs": {
+    "evidence_bundle_id": "synthetic-bundle-001",
+    "evidence_manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "file_count": 1,
+    "approximate_bytes": 128
+  },
+  "execution": {
+    "started_at": "2026-08-31T13:00:00+08:00",
+    "finished_at": "2026-08-31T13:00:01+08:00",
+    "status": "rejected",
+    "attempt": 1,
+    "capability_decisions": [
+      {
+        "capability": "filesystem.read",
+        "decision": "deny",
+        "reason_code": "policy-default-deny"
+      }
+    ]
+  },
+  "result": {
+    "schema_id": "development-placeholder",
+    "schema_version": "0.0.0",
+    "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "disposition": "reject"
+  },
+  "privacy": {
+    "raw_source_persisted": false,
+    "credentials_persisted": false,
+    "telemetry_uploaded": false
+  }
+}

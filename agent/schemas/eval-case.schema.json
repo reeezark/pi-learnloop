@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pi-learnloop:agent:schema:eval-case:1.0.0",
+  "asset_id": "eval-case-schema",
+  "version": "1.0.0",
+  "title": "Pi LearnLoop Evaluator Development Case",
+  "description": "Development-only fixture format. It is not the runtime evaluator protocol.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "case_id",
+    "case_version",
+    "category",
+    "description",
+    "stimulus",
+    "expectations",
+    "tags"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "case_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "category": {
+      "enum": [
+        "evidence_fidelity",
+        "insufficient_evidence",
+        "prompt_injection",
+        "structured_result"
+      ]
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stimulus": {
+      "type": "object",
+      "required": [
+        "evidence",
+        "candidate_output"
+      ],
+      "properties": {
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "ref",
+              "kind",
+              "synthetic",
+              "content"
+            ],
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "code",
+                  "diff",
+                  "test",
+                  "metadata"
+                ]
+              },
+              "synthetic": {
+                "const": true
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "user_answer": {
+          "type": "string"
+        },
+        "candidate_output": {}
+      },
+      "additionalProperties": false
+    },
+    "expectations": {
+      "type": "object",
+      "required": [
+        "decision",
+        "required_signals",
+        "required_evidence_refs",
+        "forbidden_claims"
+      ],
+      "properties": {
+        "decision": {
+          "enum": [
+            "accept",
+            "reject",
+            "abstain"
+          ]
+        },
+        "required_signals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "required_evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "forbidden_claims": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+      },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

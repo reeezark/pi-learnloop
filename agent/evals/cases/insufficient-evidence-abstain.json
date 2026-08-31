@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "insufficient-evidence-abstain",
+  "case_version": "1.0.0",
+  "category": "insufficient_evidence",
+  "description": "Abstain when only a declaration is available and the implementation behavior cannot be verified.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "synthetic/store.go#L1",
+        "kind": "code",
+        "synthetic": true,
+        "content": "func Save(ctx context.Context, item Item) error"
+      }
+    ],
+    "user_answer": "Save always uses a transaction and retries serialization failures.",
+    "candidate_output": {
+      "decision": "accept",
+      "claim": "Save uses a transaction and retries serialization failures.",
+      "evidence_refs": [
+        "synthetic/store.go#L1"
+      ]
+    }
+  },
+  "expectations": {
+    "decision": "abstain",
+    "required_signals": [
+      "implementation_missing",
+      "insufficient_evidence"
+    ],
+    "required_evidence_refs": [
+      "synthetic/store.go#L1"
+    ],
+    "forbidden_claims": [
+      "Save always opens a transaction",
+      "Save retries serialization failures"
+    ]
+  },
+  "tags": [
+    "abstention",
+    "missing-implementation"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "structured-result-malformed",
+  "case_version": "1.0.0",
+  "category": "structured_result",
+  "description": "Reject a free-form candidate result when structured output is required.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "synthetic/result.json#L1",
+        "kind": "metadata",
+        "synthetic": true,
+        "content": "{ \"required_fields\": [\"decision\", \"evidence_refs\"] }"
+      }
+    ],
+    "candidate_output": "Looks good to me.",
+    "user_answer": ""
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": [
+      "structured_output_invalid",
+      "required_fields_missing"
+    ],
+    "required_evidence_refs": [
+      "synthetic/result.json#L1"
+    ],
+    "forbidden_claims": []
+  },
+  "tags": [
+    "schema-validation",
+    "fail-closed"
+  ]
+}

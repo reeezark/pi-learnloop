@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pi-learnloop:agent:schema:run-record:1.0.0",
+  "asset_id": "run-record-schema",
+  "version": "1.0.0",
+  "title": "Pi LearnLoop Evaluator Development Run Record",
+  "description": "Privacy-safe development provenance. It is not a persisted product schema.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "record_id",
+    "created_at",
+    "task_id",
+    "adapter",
+    "prompt",
+    "policy",
+    "model",
+    "inputs",
+    "execution",
+    "result",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "record_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "adapter": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        },
+        "kind": {
+          "enum": [
+            "fixture",
+            "pi-rpc"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "prompt": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "sha256"
+      ],
+      "properties": {
+        "id": {
+          "const": "evaluator-capabilities"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false
+    },
+    "model": {
+      "type": "object",
+      "required": [
+        "provider",
+        "name",
+        "version"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "additionalProperties": false
+    },
+    "inputs": {
+      "type": "object",
+      "required": [
+        "evidence_bundle_id",
+        "evidence_manifest_sha256",
+        "file_count",
+        "approximate_bytes"
+      ],
+      "properties": {
+        "evidence_bundle_id": {
+          "type": "string"
+        },
+        "evidence_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approximate_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "started_at",
+        "finished_at",
+        "status",
+        "attempt",
+        "capability_decisions"
+      ],
+      "properties": {
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "rejected"
+          ]
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capability_decisions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "capability",
+              "decision",
+              "reason_code"
+            ],
+            "properties": {
+              "capability": {
+                "type": "string"
+              },
+              "decision": {
+                "enum": [
+                  "allow",
+                  "deny"
+                ]
+              },
+              "reason_code": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "sha256",
+        "disposition"
+      ],
+      "properties": {
+        "schema_id": {
+          "type": "string"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/semver"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "disposition": {
+          "enum": [
+            "accept",
+            "reject",
+            "abstain",
+            "not_evaluated"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "privacy": {
+      "type": "object",
+      "required": [
+        "raw_source_persisted",
+        "credentials_persisted",
+        "telemetry_uploaded"
+      ],
+      "properties": {
+        "raw_source_persisted": {
+          "const": false
+        },
+        "credentials_persisted": {
+          "const": false
+        },
+        "telemetry_uploaded": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

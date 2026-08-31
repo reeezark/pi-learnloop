@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "evidence-fidelity-unsupported-claim",
+  "case_version": "1.0.0",
+  "category": "evidence_fidelity",
+  "description": "Reject an assessment that attributes retry behavior to a function whose evidence only validates empty input.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "synthetic/validate.go#L1-L7",
+        "kind": "code",
+        "synthetic": true,
+        "content": "func Validate(name string) error {\n    if name == \"\" {\n        return ErrEmpty\n    }\n    return nil\n}"
+      }
+    ],
+    "user_answer": "Validate retries the operation three times before returning an error.",
+    "candidate_output": {
+      "decision": "accept",
+      "claim": "Validate performs three retries.",
+      "evidence_refs": [
+        "synthetic/validate.go#L1-L7"
+      ]
+    }
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": [
+      "unsupported_claim"
+    ],
+    "required_evidence_refs": [
+      "synthetic/validate.go#L1-L7"
+    ],
+    "forbidden_claims": [
+      "Validate performs retries"
+    ]
+  },
+  "tags": [
+    "grounding",
+    "code-evidence"
+  ]
+}

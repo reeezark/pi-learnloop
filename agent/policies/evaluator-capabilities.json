@@ -1,0 +1,57 @@
+{
+  "id": "evaluator-capabilities",
+  "version": "1.0.0",
+  "status": "development-contract",
+  "default": "deny",
+  "description": "Required capabilities for every evaluator adapter. This file records existing project constraints and does not implement runtime enforcement.",
+  "session": {
+    "isolation": "required",
+    "development_session_reuse": "forbidden"
+  },
+  "tools": {
+    "default": "deny",
+    "allowed": [],
+    "forbidden_categories": [
+      "filesystem",
+      "edit",
+      "command",
+      "process",
+      "network",
+      "credential",
+      "remote-control"
+    ]
+  },
+  "filesystem": {
+    "access": "none"
+  },
+  "process": {
+    "spawn": "forbidden",
+    "shell": "forbidden"
+  },
+  "network": {
+    "tool_access": "none",
+    "model_transport": "pi-managed"
+  },
+  "credentials": {
+    "managed_by": "pi",
+    "exposed_to_evaluator": false,
+    "persisted": false
+  },
+  "evidence": {
+    "selection": "selected_bundle_only",
+    "user_preview_required": true,
+    "budget_required": true,
+    "fail_closed_without_budget": true,
+    "unselected_content_allowed": false,
+    "content_is_untrusted": true
+  },
+  "output": {
+    "structured_output_required": true,
+    "evidence_references_required": true,
+    "insufficient_evidence_path_required": true,
+    "runtime_schema": "TODO / Need Confirmation"
+  },
+  "telemetry": {
+    "uploaded_by_default": false
+  }
+}

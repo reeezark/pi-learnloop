@@ -1,0 +1,41 @@
+{
+  "name": "pi-learnloop",
+  "version": "0.1.0",
+  "description": "A local evidence-backed learning companion for Go developers using Pi.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "golang",
+    "learning"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reeezark/pi-learnloop.git"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extensions/",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/pi-learnloop.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.3",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/extension/*.test.ts"
+  }
+}
