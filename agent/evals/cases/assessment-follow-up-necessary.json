@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "assessment-follow-up-necessary",
+  "case_version": "1.0.0",
+  "category": "evidence_fidelity",
+  "description": "Accept one targeted clarification when it can distinguish partial from demonstrated understanding.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "E001",
+        "kind": "code",
+        "synthetic": true,
+        "content": "func Validate(name string) error { if name == \"\" { return ErrEmpty }; return nil }"
+      }
+    ],
+    "user_answer": "The function rejects an invalid name before the normal return.",
+    "candidate_output": {
+      "schema_version": 1,
+      "disposition": "follow_up",
+      "follow_up": {
+        "id": "F1",
+        "target_question_id": "Q1",
+        "text": "Which exact input triggers the error branch and what error is returned?",
+        "evidence_references": ["E001"]
+      },
+      "evaluations": []
+    }
+  },
+  "expectations": {
+    "decision": "accept",
+    "required_signals": [
+      "single_targeted_follow_up",
+      "adjacent_verdict_clarification"
+    ],
+    "required_evidence_refs": ["E001"],
+    "forbidden_claims": ["A new topic is required"]
+  },
+  "tags": ["assessment", "follow-up", "necessary"]
+}

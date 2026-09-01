@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "assessment-follow-up-unnecessary",
+  "case_version": "1.0.0",
+  "category": "evidence_fidelity",
+  "description": "Reject a follow-up when the answer already demonstrates the requested behavior precisely.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "E001",
+        "kind": "code",
+        "synthetic": true,
+        "content": "func Validate(name string) error { if name == \"\" { return ErrEmpty }; return nil }"
+      }
+    ],
+    "user_answer": "An empty name takes the first branch and returns ErrEmpty; every non-empty name reaches the final nil return.",
+    "candidate_output": {
+      "schema_version": 1,
+      "disposition": "follow_up",
+      "follow_up": {
+        "id": "F1",
+        "target_question_id": "Q1",
+        "text": "Can you explain that again?",
+        "evidence_references": ["E001"]
+      },
+      "evaluations": []
+    }
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": [
+      "follow_up_not_material",
+      "already_demonstrated"
+    ],
+    "required_evidence_refs": ["E001"],
+    "forbidden_claims": ["More detail is always required"]
+  },
+  "tags": ["assessment", "follow-up", "unnecessary"]
+}

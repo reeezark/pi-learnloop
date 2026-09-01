@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "assessment-final-stage-second-follow-up",
+  "case_version": "1.0.0",
+  "category": "structured_result",
+  "description": "Reject a second follow-up after the one allowed clarification has been answered.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "E001",
+        "kind": "metadata",
+        "synthetic": true,
+        "content": "assessment_stage=follow_up_answer; allowed_follow_ups=1; completed_follow_ups=1"
+      }
+    ],
+    "user_answer": "The empty-name branch returns ErrEmpty.",
+    "candidate_output": {
+      "schema_version": 1,
+      "disposition": "follow_up",
+      "follow_up": {
+        "id": "F1",
+        "target_question_id": "Q1",
+        "text": "One more clarification?",
+        "evidence_references": ["E001"]
+      },
+      "evaluations": []
+    }
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": [
+      "second_follow_up_rejected",
+      "final_stage_requires_complete"
+    ],
+    "required_evidence_refs": ["E001"],
+    "forbidden_claims": ["Follow-up stages may recurse"]
+  },
+  "tags": ["assessment", "follow-up", "state-machine"]
+}

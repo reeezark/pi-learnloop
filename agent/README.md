@@ -6,7 +6,7 @@ status: development-contract
 
 # Evaluator Development Module
 
-This directory is the single interface for developing and reviewing Pi LearnLoop's evaluator behavior. It contains development contracts and immutable production prompt assets. Runtime Go contracts live under `internal/evaluator/`; no Pi RPC evaluator is implemented in this phase.
+This directory is the single interface for developing and reviewing Pi LearnLoop's evaluator behavior. It contains development contracts, synthetic cases, immutable released prompt assets, and draft prompt assets. Runtime Go contracts and adapters live under `internal/evaluator/`; draft assets are not production-callable.
 
 ## Interface
 
@@ -18,7 +18,7 @@ Every evaluator adapter must follow this sequence:
 4. Record versions, hashes, decisions, and privacy flags using `schemas/run-record.schema.json`.
 5. Run `scripts/validate-agent-infra.sh`.
 
-The deterministic fixture adapter and the future Pi RPC adapter are the two intended adapters at this seam. Both adapters remain unimplemented in Phase 1; only their input, output, and invocation contracts exist.
+The question-generation seam has deterministic and isolated Pi RPC adapters. The answer-assessment seam currently has strict runtime contracts and a deterministic test adapter only; production Pi invocation is deferred to the separately authorized Phase 3.
 
 ## Authoritative Assets
 
@@ -28,8 +28,9 @@ The deterministic fixture adapter and the future Pi RPC adapter are the two inte
 | Eval-case schema | `eval-case-schema` | `1.0.0` | Development fixture format |
 | Run-record schema | `run-record-schema` | `1.0.0` | Privacy-safe execution provenance |
 | Question prompt | `evaluator-question-generation` | `1.0.0` | Strict, evidence-grounded three-question generation |
+| Assessment prompt (draft) | `evaluator-answer-assessment` | `1.0.0` | Review-only rubric for one optional follow-up and three final verdicts |
 
-The runtime schema identifiers `evaluator-input@1` and `evaluator-question-set@1` are implemented by `internal/evaluator/`. They are intentionally distinct from the development fixture schemas in this directory.
+The runtime schema identifiers `evaluator-input@1`, `evaluator-question-set@1`, `evaluator-assessment-input@1`, and `evaluator-assessment-turn@1` are implemented by `internal/evaluator/`. They are intentionally distinct from the development fixture schemas in this directory.
 
 ## Invariants
 
@@ -41,6 +42,7 @@ The runtime schema identifiers `evaluator-input@1` and `evaluator-question-set@1
 - Released asset versions are immutable. Change behavior by adding a new version and preserving fixtures for the old version.
 - Development schemas do not become runtime product protocols without an explicit compatibility review.
 - Runtime question output is accepted only after deterministic shape, size, UTF-8, duplicate-key, and evidence-reference validation.
+- Runtime assessment output permits one F1 only at the initial stage or exactly three ordered verdicts; the public label is derived deterministically in Go.
 
 ## Validation
 

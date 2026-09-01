@@ -36,6 +36,12 @@ Allowed prompt states are `draft | released | deprecated`.
 | --- | --- | --- | --- |
 | `evaluator-question-generation` | `1.0.0` | `evaluator-input@1` | `evaluator-question-set@1` |
 
+## Current Draft Prompt
+
+| Prompt | Version | Input | Output | Product status |
+| --- | --- | --- | --- | --- |
+| `evaluator-answer-assessment` | `1.0.0` | `evaluator-assessment-input@1` | `evaluator-assessment-turn@1` | Phase 1 contract asset only; not embedded or callable |
+
 ## Version Rules
 
 - Patch: editorial clarification with no intended behavior or schema change.
@@ -44,6 +50,7 @@ Allowed prompt states are `draft | released | deprecated`.
 - Released versions are immutable. Add a new file instead of editing one.
 - Every behavior-changing version must add or update eval cases before release.
 - Every run record stores prompt identifier, version, and SHA-256 hash.
+- Draft prompts are review assets only. Production embedding or invocation requires an explicitly authorized release phase.
 
 ## Content Rules
 

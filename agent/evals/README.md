@@ -38,3 +38,15 @@ Released cases are immutable. Add a new case version when expectations change.
 5. Run both Agent-infrastructure verification commands.
 
 Live paid model calls, pass-rate thresholds, and semantic graders remain `TODO / Need Confirmation` for the evaluator implementation plan.
+
+## Answer-assessment coverage
+
+Assessment-specific cases reuse this development schema and remain synthetic stimuli rather than runtime protocol fixtures. They currently cover:
+
+- unsupported answers and vague-answer over-crediting;
+- prompt injection carried in a user answer;
+- a materially useful follow-up and an unnecessary follow-up;
+- rejection of a second follow-up at the final stage;
+- malformed complete-assessment output.
+
+These cases define observable review expectations. They do not make the draft assessment prompt callable and do not contact or grade a live model.

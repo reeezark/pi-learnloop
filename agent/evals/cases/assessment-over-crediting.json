@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "assessment-over-crediting",
+  "case_version": "1.0.0",
+  "category": "evidence_fidelity",
+  "description": "Reject an assessment that treats a vague restatement as demonstrated understanding.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "E001",
+        "kind": "code",
+        "synthetic": true,
+        "content": "func Validate(name string) error { if name == \"\" { return ErrEmpty }; return nil }"
+      }
+    ],
+    "user_answer": "It validates the name and handles errors correctly.",
+    "candidate_output": {
+      "question_id": "Q1",
+      "verdict": "demonstrated",
+      "feedback": "The answer fully explains both branches.",
+      "evidence_references": ["E001"]
+    }
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": [
+      "material_branch_detail_missing",
+      "vague_answer_overcredited"
+    ],
+    "required_evidence_refs": ["E001"],
+    "forbidden_claims": ["The answer explains the empty-name branch"]
+  },
+  "tags": ["assessment", "rubric", "over-crediting"]
+}

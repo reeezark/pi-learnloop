@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "assessment-malformed-output",
+  "case_version": "1.0.0",
+  "category": "structured_result",
+  "description": "Reject a complete assessment with an unknown overall score and missing ordered evaluations.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "E001",
+        "kind": "metadata",
+        "synthetic": true,
+        "content": "required_questions=Q1,Q2,Q3; allowed_disposition=complete"
+      }
+    ],
+    "user_answer": "Synthetic answer.",
+    "candidate_output": {
+      "schema_version": 1,
+      "disposition": "complete",
+      "score": 100,
+      "evaluations": []
+    }
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": [
+      "structured_output_invalid",
+      "exact_evaluations_missing"
+    ],
+    "required_evidence_refs": ["E001"],
+    "forbidden_claims": ["A model-selected score is part of the schema"]
+  },
+  "tags": ["assessment", "schema-validation", "fail-closed"]
+}
