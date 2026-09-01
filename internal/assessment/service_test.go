@@ -27,7 +27,7 @@ func TestServiceStart(t *testing.T) {
 			return completeTurn(input), nil
 		}))
 		input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
-		descriptor, err := service.Start(input, questions, selection)
+		descriptor, err := service.Start(input, questions, selection, validHistoryProvenance())
 		if err != nil {
 			t.Fatalf("Start() error = %v", err)
 		}
@@ -50,7 +50,7 @@ func TestServiceStart(t *testing.T) {
 	t.Run("reports explicit unavailable reasons without retaining state", func(t *testing.T) {
 		input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
 		withoutEvaluator := testService(nil)
-		descriptor, err := withoutEvaluator.Start(input, questions, selection)
+		descriptor, err := withoutEvaluator.Start(input, questions, selection, validHistoryProvenance())
 		if err != nil || descriptor.Available || descriptor.Reason != "evaluator_unavailable" {
 			t.Fatalf("Start(no evaluator) = (%#v, %v), want evaluator_unavailable", descriptor, err)
 		}
@@ -59,7 +59,7 @@ func TestServiceStart(t *testing.T) {
 			Disposition:   evaluator.DispositionInsufficientEvidence,
 			Questions:     []evaluator.Question{},
 		}
-		descriptor, err = withoutEvaluator.Start(input, insufficient, selection)
+		descriptor, err = withoutEvaluator.Start(input, insufficient, selection, validHistoryProvenance())
 		if err != nil || descriptor.Available || descriptor.Reason != "insufficient_evidence" {
 			t.Fatalf("Start(insufficient) = (%#v, %v), want insufficient_evidence", descriptor, err)
 		}
@@ -69,12 +69,12 @@ func TestServiceStart(t *testing.T) {
 		service := testService(evaluator.DeterministicAssessmentEvaluator{})
 		input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
 		input.EvidenceBundle.Items[0].Content = "changed without updating hash"
-		if _, err := service.Start(input, questions, selection); !errors.Is(err, ErrInvalidStart) {
+		if _, err := service.Start(input, questions, selection, validHistoryProvenance()); !errors.Is(err, ErrInvalidStart) {
 			t.Fatalf("Start(invalid input) error = %v, want ErrInvalidStart", err)
 		}
 		input, questions, selection = validStartContext(t, "func Validate() error { return nil }")
 		selection.Provider = "-unsafe"
-		if _, err := service.Start(input, questions, selection); !errors.Is(err, ErrInvalidStart) {
+		if _, err := service.Start(input, questions, selection, validHistoryProvenance()); !errors.Is(err, ErrInvalidStart) {
 			t.Fatalf("Start(invalid selection) error = %v, want ErrInvalidStart", err)
 		}
 	})
@@ -83,11 +83,11 @@ func TestServiceStart(t *testing.T) {
 		service := testService(evaluator.DeterministicAssessmentEvaluator{})
 		service.maxEntries = 1
 		input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
-		first, err := service.Start(input, questions, selection)
+		first, err := service.Start(input, questions, selection, validHistoryProvenance())
 		if err != nil || !first.Available {
 			t.Fatalf("first Start() = (%#v, %v), want available", first, err)
 		}
-		second, err := service.Start(input, questions, selection)
+		second, err := service.Start(input, questions, selection, validHistoryProvenance())
 		if err != nil || second.Available || second.Reason != "capacity" {
 			t.Fatalf("second Start() = (%#v, %v), want capacity", second, err)
 		}
@@ -97,11 +97,11 @@ func TestServiceStart(t *testing.T) {
 
 		service = testService(evaluator.DeterministicAssessmentEvaluator{})
 		service.maxBytes = input.EvidenceBundle.ApproximateBytes
-		first, err = service.Start(input, questions, selection)
+		first, err = service.Start(input, questions, selection, validHistoryProvenance())
 		if err != nil || !first.Available {
 			t.Fatalf("byte-limited first Start() = (%#v, %v), want available", first, err)
 		}
-		second, err = service.Start(input, questions, selection)
+		second, err = service.Start(input, questions, selection, validHistoryProvenance())
 		if err != nil || second.Available || second.Reason != "capacity" {
 			t.Fatalf("byte-limited second Start() = (%#v, %v), want capacity", second, err)
 		}
@@ -111,12 +111,12 @@ func TestServiceStart(t *testing.T) {
 		service := testService(evaluator.DeterministicAssessmentEvaluator{})
 		service.maxEntries = 1
 		input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
-		first, err := service.Start(input, questions, selection)
+		first, err := service.Start(input, questions, selection, validHistoryProvenance())
 		if err != nil || !first.Available {
 			t.Fatalf("first Start() = (%#v, %v), want available", first, err)
 		}
 		service.now = func() time.Time { return time.Date(2026, 9, 1, 12, 30, 0, 1, time.UTC) }
-		second, err := service.Start(input, questions, selection)
+		second, err := service.Start(input, questions, selection, validHistoryProvenance())
 		if err != nil || !second.Available || second.ID == first.ID {
 			t.Fatalf("Start(after expiry) = (%#v, %v), want new available entry", second, err)
 		}
@@ -256,7 +256,7 @@ func TestServiceClose(t *testing.T) {
 		t.Fatalf("Submit(after Close) error = %v, want ErrClosed", err)
 	}
 	input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
-	if _, err := service.Start(input, questions, selection); !errors.Is(err, ErrClosed) {
+	if _, err := service.Start(input, questions, selection, validHistoryProvenance()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Start(after Close) error = %v, want ErrClosed", err)
 	}
 	if len(service.entries) != 0 || service.retainedBytes != 0 {
@@ -264,13 +264,13 @@ func TestServiceClose(t *testing.T) {
 	}
 	withoutEvaluator := testService(nil)
 	withoutEvaluator.Close()
-	if _, err := withoutEvaluator.Start(input, questions, selection); !errors.Is(err, ErrClosed) {
+	if _, err := withoutEvaluator.Start(input, questions, selection, validHistoryProvenance()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Start(after Close without evaluator) error = %v, want ErrClosed", err)
 	}
 }
 
 func testService(assessmentEvaluator evaluator.AssessmentEvaluator) *Service {
-	service := New(assessmentEvaluator)
+	service := New(assessmentEvaluator, nil)
 	service.now = func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }
 	var sequence atomic.Int64
 	service.newID = func() (string, error) {
@@ -282,7 +282,7 @@ func testService(assessmentEvaluator evaluator.AssessmentEvaluator) *Service {
 func startAssessment(t *testing.T, service *Service) Descriptor {
 	t.Helper()
 	input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
-	descriptor, err := service.Start(input, questions, selection)
+	descriptor, err := service.Start(input, questions, selection, validHistoryProvenance())
 	if err != nil || !descriptor.Available {
 		t.Fatalf("Start() = (%#v, %v), want available", descriptor, err)
 	}

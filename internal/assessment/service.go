@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/reeezark/pi-learnloop/internal/evaluator"
+	"github.com/reeezark/pi-learnloop/internal/history"
 )
 
 const (
@@ -19,6 +20,7 @@ const (
 	maxLiveAssessments        = 8
 	maxRetainedEvidenceBytes  = 1024 * 1024
 	assessmentIdentifierBytes = 32
+	historyWriteTimeout       = 5 * time.Second
 )
 
 var (
@@ -43,8 +45,27 @@ type Submission struct {
 }
 
 type Result struct {
-	Turn  evaluator.AssessmentTurn
-	Label evaluator.AssessmentLabel
+	Turn    evaluator.AssessmentTurn
+	Label   evaluator.AssessmentLabel
+	History HistorySave
+}
+
+const HistoryStorageUnavailable = "storage_unavailable"
+
+// HistorySave reports only whether the completed result reached durable
+// storage. Follow-up turns do not expose the internal running record.
+type HistorySave struct {
+	Saved    bool   `json:"saved"`
+	RecordID string `json:"record_id,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// Provenance contains the server-owned values not already present in the
+// validated evaluator input, question set, and model selection.
+type Provenance struct {
+	CanonicalRoot    string
+	QuestionPrompt   history.PromptProvenance
+	AssessmentPrompt history.PromptProvenance
 }
 
 type entryState uint8
@@ -62,6 +83,8 @@ type entry struct {
 	selection     evaluator.ModelSelection
 	initial       evaluator.AssessmentInput
 	followUp      evaluator.FollowUpQuestion
+	provenance    Provenance
+	historyID     string
 	state         entryState
 	expiresAt     time.Time
 	evidenceBytes int
@@ -74,6 +97,7 @@ type Service struct {
 	entries       map[string]entry
 	retainedBytes int
 	evaluator     evaluator.AssessmentEvaluator
+	history       *history.Store
 	closed        bool
 	now           func() time.Time
 	newID         func() (string, error)
@@ -82,10 +106,11 @@ type Service struct {
 	maxBytes      int
 }
 
-func New(assessmentEvaluator evaluator.AssessmentEvaluator) *Service {
+func New(assessmentEvaluator evaluator.AssessmentEvaluator, historyStore *history.Store) *Service {
 	return &Service{
 		entries:   make(map[string]entry),
 		evaluator: assessmentEvaluator,
+		history:   historyStore,
 		now:       time.Now,
 		newID: func() (string, error) {
 			content := make([]byte, assessmentIdentifierBytes)
@@ -100,7 +125,7 @@ func New(assessmentEvaluator evaluator.AssessmentEvaluator) *Service {
 	}
 }
 
-func (service *Service) Start(input evaluator.Input, questions evaluator.QuestionSet, selection evaluator.ModelSelection) (Descriptor, error) {
+func (service *Service) Start(input evaluator.Input, questions evaluator.QuestionSet, selection evaluator.ModelSelection, provenance Provenance) (Descriptor, error) {
 	if service == nil {
 		return Descriptor{}, ErrClosed
 	}
@@ -165,6 +190,7 @@ func (service *Service) Start(input evaluator.Input, questions evaluator.Questio
 		input:         owned.EvaluatorInput,
 		questions:     owned.QuestionSet,
 		selection:     selection,
+		provenance:    provenance,
 		state:         stateAwaitingAnswers,
 		expiresAt:     expiresAt,
 		evidenceBytes: evidenceBytes,
@@ -245,11 +271,26 @@ func (service *Service) Submit(ctx context.Context, id string, submission Submis
 	service.entries[id] = current
 	service.mu.Unlock()
 
+	recordID := current.historyID
+	if evaluatingState == stateEvaluatingInitial && service.history != nil {
+		recordID = service.createHistory(ctx, current, assessmentInput)
+		if recordID != "" {
+			service.mu.Lock()
+			retained, retainedExists := service.entries[id]
+			if retainedExists && retained.state == evaluatingState && !service.closed {
+				retained.historyID = recordID
+				service.entries[id] = retained
+			}
+			service.mu.Unlock()
+		}
+	}
+
 	turn, err := service.evaluator.EvaluateAssessment(ctx, assessmentInput, current.selection)
 	if err == nil {
 		turn, err = validateTurn(turn, assessmentInput)
 	}
 	if err != nil {
+		service.failHistory(ctx, recordID, err)
 		service.mu.Lock()
 		service.removeIfStateLocked(id, evaluatingState)
 		service.mu.Unlock()
@@ -263,9 +304,13 @@ func (service *Service) Submit(ctx context.Context, id string, submission Submis
 		return Result{}, ErrUnavailable
 	}
 	if turn.Disposition == evaluator.AssessmentDispositionFollowUp {
+		if recordID != "" && service.markHistoryFollowUp(ctx, recordID) != nil {
+			recordID = ""
+		}
 		current.state = stateAwaitingFollowUp
 		current.initial = assessmentInput
 		current.followUp = *turn.FollowUp
+		current.historyID = recordID
 		service.entries[id] = current
 		return Result{Turn: turn}, nil
 	}
@@ -275,8 +320,87 @@ func (service *Service) Submit(ctx context.Context, id string, submission Submis
 		service.removeIfStateLocked(id, evaluatingState)
 		return Result{}, err
 	}
+	historySave := service.completeHistory(ctx, recordID, assessmentInput.QuestionSet, turn, label)
 	service.removeIfStateLocked(id, evaluatingState)
-	return Result{Turn: turn, Label: label}, nil
+	return Result{Turn: turn, Label: label, History: historySave}, nil
+}
+
+func (service *Service) createHistory(ctx context.Context, current entry, input evaluator.AssessmentInput) string {
+	recordID, err := service.history.Create(ctx, history.Start{
+		CanonicalRoot:           current.provenance.CanonicalRoot,
+		StartedAt:               service.historyNow(),
+		BaseRevision:            input.EvaluatorInput.EvidenceBundle.BaseRevision,
+		HeadRevision:            input.EvaluatorInput.EvidenceBundle.HeadRevision,
+		EvidenceManifestSHA256:  input.EvaluatorInput.EvidenceBundle.ManifestSHA256,
+		QuestionSchemaVersion:   input.QuestionSet.SchemaVersion,
+		AssessmentSchemaVersion: evaluator.AssessmentTurnSchemaVersion,
+		QuestionPrompt:          current.provenance.QuestionPrompt,
+		AssessmentPrompt:        current.provenance.AssessmentPrompt,
+		PiVersion:               current.selection.PiVersion,
+		Provider:                current.selection.Provider,
+		ModelID:                 current.selection.ModelID,
+		ThinkingLevel:           current.selection.ThinkingLevel,
+	})
+	if err != nil {
+		return ""
+	}
+	return recordID
+}
+
+func (service *Service) markHistoryFollowUp(parent context.Context, recordID string) error {
+	ctx, cancel := historyWriteContext(parent)
+	defer cancel()
+	return service.history.MarkFollowUp(ctx, recordID)
+}
+
+func (service *Service) completeHistory(parent context.Context, recordID string, questions evaluator.QuestionSet, turn evaluator.AssessmentTurn, label evaluator.AssessmentLabel) HistorySave {
+	if service.history == nil || recordID == "" {
+		return HistorySave{Saved: false, Reason: HistoryStorageUnavailable}
+	}
+	outcomes := make([]history.Outcome, len(turn.Evaluations))
+	for index := range turn.Evaluations {
+		outcomes[index] = history.Outcome{
+			QuestionID:   turn.Evaluations[index].QuestionID,
+			QuestionKind: history.QuestionKind(questions.Questions[index].Kind),
+			Verdict:      history.Verdict(turn.Evaluations[index].Verdict),
+		}
+	}
+	ctx, cancel := historyWriteContext(parent)
+	defer cancel()
+	if err := service.history.Complete(ctx, recordID, history.Completion{
+		FinishedAt: service.historyNow(),
+		Label:      history.Label(label),
+		Outcomes:   outcomes,
+	}); err != nil {
+		return HistorySave{Saved: false, Reason: HistoryStorageUnavailable}
+	}
+	return HistorySave{Saved: true, RecordID: recordID}
+}
+
+func (service *Service) failHistory(parent context.Context, recordID string, evaluationErr error) {
+	if service.history == nil || recordID == "" {
+		return
+	}
+	code := history.FailureEvaluatorFailed
+	if errors.Is(evaluationErr, context.DeadlineExceeded) || errors.Is(parent.Err(), context.DeadlineExceeded) {
+		code = history.FailureEvaluatorTimeout
+	} else if evaluator.ContractErrorCodeOf(evaluationErr) == evaluator.ContractErrorInvalidOutput {
+		code = history.FailureEvaluatorInvalidOutput
+	}
+	ctx, cancel := historyWriteContext(parent)
+	defer cancel()
+	_ = service.history.Fail(ctx, recordID, history.Failure{
+		FinishedAt: service.historyNow(),
+		Code:       code,
+	})
+}
+
+func (service *Service) historyNow() time.Time {
+	return service.now().UTC().Truncate(time.Millisecond)
+}
+
+func historyWriteContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), historyWriteTimeout)
 }
 
 func (service *Service) Close() {

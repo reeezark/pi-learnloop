@@ -17,9 +17,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/reeezark/pi-learnloop/agent/prompts"
 	"github.com/reeezark/pi-learnloop/internal/assessment"
 	"github.com/reeezark/pi-learnloop/internal/evaluator"
 	"github.com/reeezark/pi-learnloop/internal/evidence"
+	"github.com/reeezark/pi-learnloop/internal/history"
 )
 
 const (
@@ -328,7 +330,11 @@ func handleQuestionSet(response http.ResponseWriter, request *http.Request, toke
 	if result.Disposition == evaluator.DispositionInsufficientEvidence {
 		descriptor.Reason = "insufficient_evidence"
 	} else if services.assessments != nil {
-		descriptor, err = services.assessments.Start(input, result, selection)
+		descriptor, err = services.assessments.Start(input, result, selection, assessment.Provenance{
+			CanonicalRoot:    retained.RepositoryRoot,
+			QuestionPrompt:   historyPrompt(prompts.EvaluatorQuestionGenerationV1Metadata()),
+			AssessmentPrompt: historyPrompt(prompts.EvaluatorAnswerAssessmentV1Metadata()),
+		})
 		if err != nil {
 			writeError(response, http.StatusInternalServerError, "internal_error", "internal error")
 			return
@@ -413,8 +419,17 @@ func handleAssessmentTurn(response http.ResponseWriter, request *http.Request, t
 	}
 	if result.Label != "" {
 		payloadResponse["label"] = result.Label
+		payloadResponse["history"] = result.History
 	}
 	writeJSON(response, http.StatusOK, payloadResponse)
+}
+
+func historyPrompt(metadata prompts.Metadata) history.PromptProvenance {
+	return history.PromptProvenance{
+		ID:      metadata.ID,
+		Version: metadata.Version,
+		SHA256:  metadata.SHA256,
+	}
 }
 
 func hasExactQuestionSetFields(content []byte) bool {

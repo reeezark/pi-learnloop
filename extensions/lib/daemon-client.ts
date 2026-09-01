@@ -138,7 +138,7 @@ export class DaemonEvidenceClient implements LearnClient {
         throw new EvidenceClientError("protocol_mismatch", "daemon assessment response is invalid");
       }
       return result.body.assessment_turn.disposition === "complete"
-        ? { turn: result.body.assessment_turn, label: result.body.label! }
+        ? { turn: result.body.assessment_turn, label: result.body.label!, history: result.body.history! }
         : { turn: result.body.assessment_turn };
     } catch (error) {
       throw normalizeClientError(error);
@@ -464,6 +464,7 @@ function isAssessmentResultResponse(value: unknown): value is {
   protocol_version: 1;
   assessment_turn: AssessmentResult["turn"];
   label?: "understood" | "partial" | "review_needed";
+  history?: Extract<AssessmentResult, { label: string }>["history"];
 } {
   if (!isObject(value) || value.protocol_version !== 1 || !isObject(value.assessment_turn)) {
     return false;
@@ -488,11 +489,26 @@ function isAssessmentResultResponse(value: unknown): value is {
     turn.follow_up !== null ||
     turn.evaluations.length !== 3 ||
     !["understood", "partial", "review_needed"].includes(String(value.label)) ||
-    !hasOnlyKeys(value, "protocol_version", "assessment_turn", "label")
+    !isHistorySave(value.history) ||
+    !hasOnlyKeys(value, "protocol_version", "assessment_turn", "label", "history")
   ) {
     return false;
   }
   return turn.evaluations.every(isQuestionEvaluation);
+}
+
+function isHistorySave(value: unknown): boolean {
+  if (!isObject(value) || typeof value.saved !== "boolean") {
+    return false;
+  }
+  if (value.saved) {
+    return (
+      hasOnlyKeys(value, "saved", "record_id") &&
+      typeof value.record_id === "string" &&
+      /^lr1-[A-Za-z0-9_-]{43}$/.test(value.record_id)
+    );
+  }
+  return hasOnlyKeys(value, "saved", "reason") && value.reason === "storage_unavailable";
 }
 
 function isFollowUpQuestion(value: unknown): boolean {

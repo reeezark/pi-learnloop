@@ -15,6 +15,7 @@ import (
 	"github.com/reeezark/pi-learnloop/agent/prompts"
 	"github.com/reeezark/pi-learnloop/internal/assessment"
 	"github.com/reeezark/pi-learnloop/internal/evaluator"
+	"github.com/reeezark/pi-learnloop/internal/history"
 )
 
 const (
@@ -25,10 +26,11 @@ const (
 // ErrAlreadyRunning reports that another daemon owns the runtime state lock.
 var ErrAlreadyRunning = errors.New("pi-learnloop daemon is already running")
 
-// Config supplies process-local daemon configuration. StateDir is empty in
-// production and may be set by integration tests to isolate runtime files.
+// Config supplies process-local daemon configuration. StateDir and DataDir are
+// empty in production and may be set to absolute paths by integration tests.
 type Config struct {
 	StateDir string
+	DataDir  string
 }
 
 // Run serves until ctx is cancelled or the HTTP server fails.
@@ -48,6 +50,17 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	defer lock.release()
+	dataDir, dataDirErr := resolveDataDir(config.DataDir)
+	if dataDirErr != nil && config.DataDir != "" {
+		return dataDirErr
+	}
+	var historyStore *history.Store
+	if dataDirErr == nil {
+		historyStore, _ = history.Open(ctx, dataDir)
+	}
+	if historyStore != nil {
+		defer historyStore.Close()
+	}
 	var questionEvaluator evaluator.QuestionEvaluator
 	var assessmentEvaluator evaluator.AssessmentEvaluator
 	if piEvaluator, err := evaluator.NewPiRPCEvaluator(ctx, prompts.EvaluatorQuestionGenerationV1()); err == nil {
@@ -90,7 +103,7 @@ func Run(ctx context.Context, config Config) error {
 	defer removeRuntimeFiles(stateDir, instanceID)
 	continuations := newContinuationStore()
 	defer continuations.clear()
-	assessments := assessment.New(assessmentEvaluator)
+	assessments := assessment.New(assessmentEvaluator, historyStore)
 	defer assessments.Close()
 
 	server := &http.Server{
@@ -142,4 +155,18 @@ func resolveStateDir(configured string) (string, error) {
 		return "", fmt.Errorf("daemon: resolve user config directory: %w", err)
 	}
 	return filepath.Join(configDir, "pi-learnloop", "runtime"), nil
+}
+
+func resolveDataDir(configured string) (string, error) {
+	if configured != "" {
+		if !filepath.IsAbs(configured) {
+			return "", errors.New("daemon: configured data directory must be absolute")
+		}
+		return filepath.Clean(configured), nil
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("daemon: resolve user config directory for history: %w", err)
+	}
+	return filepath.Join(configDir, "pi-learnloop", "data"), nil
 }

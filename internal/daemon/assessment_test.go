@@ -3,17 +3,23 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/reeezark/pi-learnloop/agent/prompts"
 	"github.com/reeezark/pi-learnloop/internal/assessment"
 	"github.com/reeezark/pi-learnloop/internal/evaluator"
 	"github.com/reeezark/pi-learnloop/internal/evidence"
+	"github.com/reeezark/pi-learnloop/internal/history"
 )
 
 type failingAssessmentEvaluator struct {
@@ -53,11 +59,12 @@ func TestQuestionSetAssessmentDescriptor(t *testing.T) {
 			ProtocolVersion int                       `json:"protocol_version"`
 			Turn            evaluator.AssessmentTurn  `json:"assessment_turn"`
 			Label           evaluator.AssessmentLabel `json:"label"`
+			History         assessment.HistorySave    `json:"history"`
 		}
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 			t.Fatalf("Unmarshal(assessment response): %v", err)
 		}
-		if result.ProtocolVersion != 1 || result.Turn.Disposition != evaluator.AssessmentDispositionComplete || result.Label != evaluator.AssessmentLabelPartial {
+		if result.ProtocolVersion != 1 || result.Turn.Disposition != evaluator.AssessmentDispositionComplete || result.Label != evaluator.AssessmentLabelPartial || result.History.Saved || result.History.Reason != assessment.HistoryStorageUnavailable {
 			t.Fatalf("assessment response = %#v, want protocol 1 complete partial", result)
 		}
 	})
@@ -68,7 +75,7 @@ func TestQuestionSetAssessmentDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("retain(): %v", err)
 		}
-		assessments := assessment.New(nil)
+		assessments := assessment.New(nil, nil)
 		t.Cleanup(assessments.Close)
 		handler := newHandler("instance", "127.0.0.1:43210", "token", serverServices{
 			continuations:     continuations,
@@ -89,6 +96,56 @@ func TestQuestionSetAssessmentDescriptor(t *testing.T) {
 			t.Fatalf("assessment descriptor = %#v, want evaluator_unavailable without ID", result.Assessment)
 		}
 	})
+}
+
+func TestAssessmentTurnPersistsServerOwnedHistory(t *testing.T) {
+	handler, assessmentID, store, root := assessmentHandlerWithHistory(t, evaluator.DeterministicAssessmentEvaluator{})
+	response := serveAssessmentRequest(handler, validInitialAssessmentRequest(assessmentID), true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("POST /v1/assessment-turns status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var result struct {
+		Turn    evaluator.AssessmentTurn `json:"assessment_turn"`
+		History assessment.HistorySave   `json:"history"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("Unmarshal(assessment response): %v", err)
+	}
+	if result.Turn.Disposition != evaluator.AssessmentDispositionComplete || !result.History.Saved || !history.ValidRecordID(result.History.RecordID) || result.History.Reason != "" {
+		t.Fatalf("assessment response = %#v, want saved complete result", result)
+	}
+
+	records, err := store.List(context.Background(), root, 10)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("List(history) = (%#v, %v), want one record", records, err)
+	}
+	record := records[0]
+	if record.RecordID != result.History.RecordID || record.Status != history.StatusComplete || len(record.Outcomes) != 3 ||
+		record.Start.QuestionPrompt != releasedPrompt("evaluator-question-generation", prompts.EvaluatorQuestionGenerationV1()) ||
+		record.Start.AssessmentPrompt != releasedPrompt("evaluator-answer-assessment", prompts.EvaluatorAnswerAssessmentV1()) ||
+		record.Start.QuestionSchemaVersion != evaluator.QuestionSetSchemaVersion ||
+		record.Start.AssessmentSchemaVersion != evaluator.AssessmentTurnSchemaVersion {
+		t.Fatalf("history record = %#v, want server-owned prompt/schema provenance", record)
+	}
+}
+
+func releasedPrompt(id, content string) history.PromptProvenance {
+	digest := sha256.Sum256([]byte(content))
+	return history.PromptProvenance{ID: id, Version: "1.0.0", SHA256: hex.EncodeToString(digest[:])}
+}
+
+func TestAssessmentResponseLossKeepsCommittedHistory(t *testing.T) {
+	handler, assessmentID, store, root := assessmentHandlerWithHistory(t, evaluator.DeterministicAssessmentEvaluator{})
+	request := newAssessmentRequest(validInitialAssessmentRequest(assessmentID), true)
+	response := &failingResponseWriter{header: make(http.Header)}
+	handler.ServeHTTP(response, request)
+	if response.writes != 1 {
+		t.Fatalf("response writes = %d, want one failed client write", response.writes)
+	}
+	records, err := store.List(context.Background(), root, 10)
+	if err != nil || len(records) != 1 || records[0].Status != history.StatusComplete || len(records[0].Outcomes) != 3 {
+		t.Fatalf("history after response loss = (%#v, %v), want committed completion", records, err)
+	}
 }
 
 func TestAssessmentTurnFollowUpLifecycle(t *testing.T) {
@@ -166,7 +223,7 @@ func TestAssessmentTurnStrictFailuresDoNotConsumeState(t *testing.T) {
 
 func TestAssessmentTurnConcurrentSubmissionStartsOneEvaluation(t *testing.T) {
 	blocking := blockingAssessmentEvaluator{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, assessmentID := assessmentHandler(t, blocking)
+	handler, assessmentID, store, root := assessmentHandlerWithHistory(t, blocking)
 	start := make(chan struct{})
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	var wait sync.WaitGroup
@@ -198,6 +255,10 @@ func TestAssessmentTurnConcurrentSubmissionStartsOneEvaluation(t *testing.T) {
 	if successes != 1 || conflicts != 1 {
 		t.Fatalf("concurrent responses = (%d success, %d conflict), want (1, 1)", successes, conflicts)
 	}
+	records, err := store.List(context.Background(), root, 10)
+	if err != nil || len(records) != 1 || records[0].Status != history.StatusComplete {
+		t.Fatalf("concurrent history = (%#v, %v), want one complete record", records, err)
+	}
 }
 
 func TestAssessmentTurnEvaluatorFailureInvalidatesState(t *testing.T) {
@@ -221,7 +282,7 @@ func assessmentHandler(t *testing.T, assessmentEvaluator evaluator.AssessmentEva
 	if err != nil {
 		t.Fatalf("retain(): %v", err)
 	}
-	assessments := assessment.New(assessmentEvaluator)
+	assessments := assessment.New(assessmentEvaluator, nil)
 	t.Cleanup(assessments.Close)
 	handler := newHandler("instance", "127.0.0.1:43210", "token", serverServices{
 		continuations:     continuations,
@@ -244,7 +305,54 @@ func assessmentHandler(t *testing.T, assessmentEvaluator evaluator.AssessmentEva
 	return handler, questionResult.Assessment.ID
 }
 
+func assessmentHandlerWithHistory(t *testing.T, assessmentEvaluator evaluator.AssessmentEvaluator) (http.Handler, string, *history.Store, string) {
+	t.Helper()
+	store, err := history.Open(context.Background(), filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatalf("history.Open(): %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("history.Close(): %v", err)
+		}
+	})
+	continuations := newContinuationStore()
+	evidenceResult := validAssessmentEvidence()
+	continuation, err := continuations.retain(evidenceResult)
+	if err != nil {
+		t.Fatalf("retain(): %v", err)
+	}
+	assessments := assessment.New(assessmentEvaluator, store)
+	t.Cleanup(assessments.Close)
+	handler := newHandler("instance", "127.0.0.1:43210", "token", serverServices{
+		continuations:     continuations,
+		questionEvaluator: evaluator.DeterministicEvaluator{},
+		assessments:       assessments,
+	})
+	questionResponse := serveQuestionRequest(handler, validDaemonQuestionRequest(continuation.ID))
+	if questionResponse.Code != http.StatusOK {
+		t.Fatalf("question status = %d, want %d; body = %s", questionResponse.Code, http.StatusOK, questionResponse.Body.String())
+	}
+	var questionResult struct {
+		Assessment assessment.Descriptor `json:"assessment"`
+	}
+	if err := json.Unmarshal(questionResponse.Body.Bytes(), &questionResult); err != nil {
+		t.Fatalf("Unmarshal(question response): %v", err)
+	}
+	if !questionResult.Assessment.Available {
+		t.Fatalf("assessment descriptor = %#v, want available", questionResult.Assessment)
+	}
+	return handler, questionResult.Assessment.ID, store, evidenceResult.RepositoryRoot
+}
+
 func serveAssessmentRequest(handler http.Handler, body []byte, authorized bool) *httptest.ResponseRecorder {
+	request := newAssessmentRequest(body, authorized)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func newAssessmentRequest(body []byte, authorized bool) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:43210/v1/assessment-turns", bytes.NewReader(body))
 	request.Host = "127.0.0.1:43210"
 	request.RemoteAddr = "127.0.0.1:54321"
@@ -252,9 +360,23 @@ func serveAssessmentRequest(handler http.Handler, body []byte, authorized bool) 
 	if authorized {
 		request.Header.Set("Authorization", "PiLearnLoop token")
 	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
+	return request
+}
+
+type failingResponseWriter struct {
+	header http.Header
+	writes int
+}
+
+func (response *failingResponseWriter) Header() http.Header {
+	return response.header
+}
+
+func (response *failingResponseWriter) WriteHeader(int) {}
+
+func (response *failingResponseWriter) Write([]byte) (int, error) {
+	response.writes++
+	return 0, io.ErrClosedPipe
 }
 
 func validDaemonQuestionRequest(continuationID string) []byte {

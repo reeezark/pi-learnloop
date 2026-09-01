@@ -16,16 +16,16 @@ Implemented:
 - a 30-minute, eight-entry, 1-MiB bounded in-memory assessment state machine with atomic initial/F1 submission and deterministic Go label aggregation;
 - an additive assessment descriptor, strict authenticated `/v1/assessment-turns` route, and thin answer/F1/result UI with no client retries;
 - a released embedded assessment prompt and production Pi 0.84.3 RPC adapter that starts a fresh isolated process for the initial assessment and, when requested, one F1 assessment;
-- deterministic service, protocol, concurrency, cancellation, extension, and fake-process tests for the complete volatile answer flow;
-- a standalone protected SQLite history foundation with schema v1 migrations, source-free record validation, transactional terminal updates, repository-scoped queries, and startup interruption marking; it is not yet constructed by the daemon.
+- deterministic service, protocol, concurrency, cancellation, extension, and fake-process tests for the complete answer flow;
+- daemon-owned protected SQLite history at `os.UserConfigDir()/pi-learnloop/data/history.db`, with schema v1 migrations, source-free running/F1/terminal records, startup interruption marking, and explicit save status in complete assessment responses.
 
 Not implemented:
 
-- daemon-connected learning-history recording and the user-visible history query;
+- the user-visible repository history query and `/learn-history` command;
 - SSE, background jobs, Session indexing, or automatic reminders;
 - npm publication or release automation.
 
-The preview half of `/learn` never contacts a model provider. After confirmation, the daemon consumes the reviewed continuation once and starts a separate no-session, no-tools Pi RPC process using the active model. Successful questions retain the exact validated input in bounded daemon memory so the user can submit Q1/Q2/Q3 answers. The initial assessment starts a new isolated Pi process; one answered F1 may start one final isolated process. Source-bearing inputs, answers, evaluator output, and RPC streams remain in memory. The current daemon does not construct the new history store, so `/learn` still saves no learning record until an explicitly authorized integration phase.
+The preview half of `/learn` never contacts a model provider. After confirmation, the daemon consumes the reviewed continuation once and starts a separate no-session, no-tools Pi RPC process using the active model. Successful questions retain the exact validated input in bounded daemon memory so the user can submit Q1/Q2/Q3 answers. The initial assessment starts a new isolated Pi process; one answered F1 may start one final isolated process. Source-bearing inputs, answers, evaluator output, and RPC streams remain in memory. When protected history storage is available, only the source-free ADR-0005 allowlist is recorded; a storage failure never hides a successful assessment or triggers another model call.
 
 ## Requirements
 
@@ -75,7 +75,7 @@ Automated tests always use a fake Pi executable and never contact a provider. A 
 3. Start the daemon, load the extension, invoke `/learn`, and confirm only after reviewing the preview.
 4. Verify that the command returns exactly two code-specific questions and one Go/backend question.
 5. To smoke-test assessment, enter Q1/Q2/Q3 answers and approve the second disclosure. This resends the same selected excerpts together with the answers and incurs one additional model call. If F1 is returned, answering it resends the retained assessment context and may incur one more call, for at most two assessment calls beyond question generation.
-6. Verify either one F1 followed by a complete result or an immediate complete result with three verdicts and one derived label. No automated command in this repository performs this live step.
+6. Verify either one F1 followed by a complete result or an immediate complete result with three verdicts and one derived label. A warning means the assessment succeeded but local history was unavailable. No automated command in this repository performs this live step.
 
 For a persistent local installation, Pi can load the package directly from the checkout:
 
@@ -94,8 +94,9 @@ The package has no third-party runtime npm dependency. `@earendil-works/pi-codin
 - A successful preview may retain only its bounded evidence in daemon memory for five minutes. The opaque continuation is single-use, has fixed count and byte limits, and is removed on expiry or daemon shutdown.
 - Confirmation sends only the opaque continuation ID and non-secret active model identifiers to the daemon. The daemon builds the evaluator input from the exact retained preview without rereading the repository.
 - Successful production questions may retain their exact validated input for at most thirty minutes under an eight-entry/1-MiB cap. Initial answers and F1 are bounded to 4 KiB each, submissions are atomically single-consume, and completed, failed, expired, or concurrent IDs share a non-retryable unavailable result.
-- Current daemon assessment state, source, answers, prompts, model output, and feedback are never persisted or logged.
-- The standalone history store accepts only canonical repository identity, revisions, manifest/schema/prompt/model provenance, safe lifecycle status, deterministic label, and Q1/Q2/Q3 kinds/verdicts. It rejects symlinked, overbroad, wrong-owner, hard-linked, non-local, corrupt, or newer-schema storage without automatic repair; current daemon behavior does not open it yet.
+- Daemon assessment state, source, answers, prompt bodies, model output, and feedback are never persisted or logged.
+- The daemon opens the protected history store at `os.UserConfigDir()/pi-learnloop/data/history.db`. It accepts only canonical repository identity, revisions, manifest/schema/prompt/model provenance, safe lifecycle status, deterministic label, and Q1/Q2/Q3 kinds/verdicts. It rejects symlinked, overbroad, wrong-owner, hard-linked, non-local, corrupt, or newer-schema storage without automatic repair, then keeps preview and assessment available without history.
+- A validated initial submission creates one source-free `running` record before evaluation when storage is available. F1 reuses it, completion stores exactly three verdicts, known evaluator failures use bounded safe codes, and restart converts leftover `running` rows to `interrupted` without resuming or retrying evaluation.
 - Production question generation and every assessment turn start a frozen, symlink-resolved Pi 0.84.3 executable directly without a shell. Sessions, tools, extensions, skills, prompt templates, themes, context files, and project approval are disabled.
 - Only the selected excerpts and non-secret bundle provenance enter the Pi-managed model request. Credentials never enter HTTP, argv, prompts, logs, persisted records, or model-visible content.
 - RPC runtime, stdout, stderr, and final output are bounded; malformed output, discovered commands, tool events, retries, compaction, timeout, cancellation, or child failure fail closed. The child is always terminated and reaped.

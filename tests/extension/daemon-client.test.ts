@@ -487,6 +487,10 @@ test("carries an assessment descriptor and sends one strict initial-answer reque
 
   assert.equal(result.turn.disposition, "complete");
   assert.equal("label" in result ? result.label : undefined, "partial");
+  assert.deepEqual("history" in result ? result.history : undefined, {
+    saved: true,
+    record_id: `lr1-${"d".repeat(43)}`,
+  });
   assert.deepEqual(requests[1], {
     url: "/v1/assessment-turns",
     authorization: `PiLearnLoop ${token}`,
@@ -598,6 +602,49 @@ test("rejects malformed assessment feedback before rendering", async (t) => {
   );
 });
 
+test("rejects a malformed complete-assessment history descriptor", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "e".repeat(22);
+  const token = "f".repeat(43);
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    await readBody(request);
+    const invalid = validCompleteAssessmentResponse();
+    invalid.history = { saved: false, reason: "disk_full", record_id: `lr1-${"g".repeat(43)}` } as never;
+    writeJSON(response, 200, invalid);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(join(runtimeDir, "daemon.json"), JSON.stringify({
+    schema_version: 1,
+    protocol_version: 1,
+    instance_id: instanceID,
+    pid: process.pid,
+    base_url: `http://127.0.0.1:${address.port}`,
+    started_at: new Date().toISOString(),
+  }));
+
+  await assert.rejects(
+    new DaemonEvidenceClient({ runtimeDir }).assess(`as1-${"h".repeat(43)}`, {
+      stage: "initial_answers",
+      answers: [
+        { question_id: "Q1", text: "first" },
+        { question_id: "Q2", text: "second" },
+        { question_id: "Q3", text: "third" },
+      ],
+    }),
+    (error: unknown) => error instanceof EvidenceClientError && error.code === "protocol_mismatch",
+  );
+});
+
 async function writeProtectedFile(path: string, content: string): Promise<void> {
   await writeFile(path, content, { mode: 0o600 });
   await chmod(path, 0o600);
@@ -668,6 +715,7 @@ function validCompleteAssessmentResponse() {
       ],
     },
     label: "partial",
+    history: { saved: true, record_id: `lr1-${"d".repeat(43)}` },
   };
 }
 

@@ -2,7 +2,7 @@
 id: durable-learning-history-phase-1
 plan: durable-learning-history
 phase: 1
-status: current
+status: superseded
 updated: 2026-09-01
 ---
 

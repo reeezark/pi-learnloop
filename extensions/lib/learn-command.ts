@@ -113,6 +113,10 @@ export interface QuestionEvaluation {
   evidence_references: string[];
 }
 
+export type HistorySave =
+  | { saved: true; record_id: string }
+  | { saved: false; reason: "storage_unavailable" };
+
 export type AssessmentResult =
   | {
       turn: {
@@ -130,6 +134,7 @@ export type AssessmentResult =
         evaluations: [QuestionEvaluation, QuestionEvaluation, QuestionEvaluation];
       };
       label: "understood" | "partial" | "review_needed";
+      history: HistorySave;
     };
 
 export interface LearnClient extends EvidencePreviewClient {
@@ -327,6 +332,9 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
         return;
       }
       context.ui.notify(formatAssessmentResult(assessment), "info");
+      if (!assessment.history.saved) {
+        context.ui.notify("The assessment completed, but local learning history could not be saved.", "warning");
+      }
     } catch (error) {
       if (error instanceof EvidenceClientError && error.code === "continuation_unavailable") {
         context.ui.notify("This evidence preview expired or was already used. Run /learn again to review a new preview.", "warning");

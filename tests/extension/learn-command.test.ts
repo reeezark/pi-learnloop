@@ -479,6 +479,41 @@ test("collects three answers, confirms sharing, and renders the Go-derived resul
   assert.match(notifications.at(-1) ?? "", /Q1 — demonstrated/);
 });
 
+test("warns once when assessment succeeds but local history is unavailable", async () => {
+  const notifications: Array<{ message: string; type?: "info" | "warning" | "error" }> = [];
+  const inputs = ["HEAD", "first answer", "second answer", "third answer"];
+  const client: LearnClient = {
+    async preview() {
+      return continuablePreview();
+    },
+    async questions() {
+      return assessableQuestions();
+    },
+    async assess() {
+      return {
+        ...completeAssessment(),
+        history: { saved: false, reason: "storage_unavailable" },
+      };
+    },
+  };
+  const baseContext = assessmentContext(inputs, [], []);
+  await createLearnCommand(client, "0.84.3")("", {
+    ...baseContext,
+    ui: {
+      ...baseContext.ui,
+      notify(message, type) {
+        notifications.push({ message, type });
+      },
+    },
+  });
+
+  assert.ok(notifications.some(({ message, type }) => type === "info" && /Learning assessment: partial/.test(message)));
+  assert.deepEqual(notifications.at(-1), {
+    message: "The assessment completed, but local learning history could not be saved.",
+    type: "warning",
+  });
+});
+
 test("submits one answered F1 and never asks for a second follow-up", async () => {
   const submissions: unknown[] = [];
   const notifications: string[] = [];
@@ -638,6 +673,7 @@ function completeAssessment(): Extract<AssessmentResult, { label: string }> {
       ],
     },
     label: "partial" as const,
+    history: { saved: true as const, record_id: `lr1-${"C".repeat(43)}` },
   };
 }
 

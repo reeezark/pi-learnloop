@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -22,7 +23,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reeezark/pi-learnloop/agent/prompts"
 	"github.com/reeezark/pi-learnloop/internal/daemon"
+	"github.com/reeezark/pi-learnloop/internal/evaluator"
+	"github.com/reeezark/pi-learnloop/internal/history"
 )
 
 type runtimeDescriptor struct {
@@ -81,6 +85,75 @@ func TestRunPublishesLoopbackStatus(t *testing.T) {
 	}
 }
 
+func TestRunContinuesWhenHistoryStorageIsUnavailable(t *testing.T) {
+	baseDirectory := t.TempDir()
+	stateDir := filepath.Join(baseDirectory, "runtime")
+	dataPath := filepath.Join(baseDirectory, "not-a-directory")
+	if err := os.WriteFile(dataPath, []byte("occupied"), 0o600); err != nil {
+		t.Fatalf("WriteFile(unavailable data path): %v", err)
+	}
+	running := startDaemonAtWithData(t, stateDir, dataPath)
+	token := string(waitForFile(t, filepath.Join(stateDir, "daemon.token")))
+	repository, base, head := changedRepository(t)
+	continuation := requestPreviewContinuation(t, running.descriptor.BaseURL, token, repository, `{"kind":"commit_range","base":`+quoted(base)+`,"head":`+quoted(head)+`}`)
+	if !continuation.Available {
+		t.Fatalf("continuation = %#v, want preview and question flow while history is unavailable", continuation)
+	}
+	response := postQuestionSet(t, running.descriptor.BaseURL, token, validQuestionRequest(continuation.ID))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		content, _ := io.ReadAll(response.Body)
+		t.Fatalf("question status = %d, want %d; body = %s", response.StatusCode, http.StatusOK, content)
+	}
+}
+
+func TestRunRecoversRunningHistoryWithoutEvaluatorCall(t *testing.T) {
+	baseDirectory := t.TempDir()
+	stateDir := filepath.Join(baseDirectory, "runtime")
+	dataDir := filepath.Join(baseDirectory, "data")
+	root := filepath.Join(baseDirectory, "repository")
+	store, err := history.Open(context.Background(), dataDir)
+	if err != nil {
+		t.Fatalf("history.Open(): %v", err)
+	}
+	recordID, err := store.Create(context.Background(), daemonHistoryStart(root))
+	if err != nil {
+		t.Fatalf("history.Create(): %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("history.Close(): %v", err)
+	}
+
+	evaluatorMarker := filepath.Join(baseDirectory, "evaluator-called")
+	t.Setenv("PI_LEARNLOOP_EVALUATOR_MARKER", evaluatorMarker)
+	running := startDaemonAtWithData(t, stateDir, dataDir)
+	if _, err := os.Lstat(evaluatorMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("evaluator marker error = %v, want no evaluator call during recovery", err)
+	}
+
+	database, err := sql.Open("sqlite", filepath.Join(dataDir, "history.db"))
+	if err != nil {
+		t.Fatalf("sql.Open(history): %v", err)
+	}
+	defer database.Close()
+	var status history.Status
+	if err := database.QueryRowContext(context.Background(), "SELECT status FROM learning_attempts WHERE record_id = ?", recordID).Scan(&status); err != nil {
+		t.Fatalf("query recovered status: %v", err)
+	}
+	if status != history.StatusInterrupted {
+		t.Fatalf("recovered status = %q, want interrupted", status)
+	}
+	running.stop()
+}
+
+func TestRunRejectsRelativeTestDataDirectory(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "runtime")
+	err := daemon.Run(context.Background(), daemon.Config{StateDir: stateDir, DataDir: "relative-data"})
+	if err == nil || !strings.Contains(err.Error(), "data directory must be absolute") {
+		t.Fatalf("Run(relative DataDir) error = %v, want absolute-path rejection", err)
+	}
+}
+
 func TestRunPublishesDiscoveryOnlyAfterEvaluatorPreflight(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "runtime")
 	binDirectory := t.TempDir()
@@ -96,7 +169,7 @@ func TestRunPublishesDiscoveryOnlyAfterEvaluatorPreflight(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- daemon.Run(ctx, daemon.Config{StateDir: stateDir})
+		errCh <- daemon.Run(ctx, daemon.Config{StateDir: stateDir, DataDir: filepath.Join(filepath.Dir(stateDir), "data")})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -208,7 +281,7 @@ func TestRunRejectsSecondInstanceForSameStateDirectory(t *testing.T) {
 	stateDir, _ := startDaemon(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := daemon.Run(ctx, daemon.Config{StateDir: stateDir})
+	err := daemon.Run(ctx, daemon.Config{StateDir: stateDir, DataDir: filepath.Join(filepath.Dir(stateDir), "data")})
 	if !errors.Is(err, daemon.ErrAlreadyRunning) {
 		t.Fatalf("second Run() error = %v, want ErrAlreadyRunning", err)
 	}
@@ -230,7 +303,7 @@ func TestRunRejectsSymlinkedRuntimeCredential(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := daemon.Run(ctx, daemon.Config{StateDir: stateDir}); err == nil {
+	if err := daemon.Run(ctx, daemon.Config{StateDir: stateDir, DataDir: filepath.Join(filepath.Dir(stateDir), "data")}); err == nil {
 		t.Fatal("Run() error = nil, want symlinked credential rejection")
 	}
 	info, err := os.Lstat(tokenPath)
@@ -250,7 +323,7 @@ func TestRunRejectsInsecureStateDirectoryPermissions(t *testing.T) {
 	if err := os.Chmod(stateDir, 0o755); err != nil {
 		t.Fatalf("Chmod(%q): %v", stateDir, err)
 	}
-	if err := daemon.Run(context.Background(), daemon.Config{StateDir: stateDir}); err == nil || !strings.Contains(err.Error(), "want 0700") {
+	if err := daemon.Run(context.Background(), daemon.Config{StateDir: stateDir, DataDir: filepath.Join(filepath.Dir(stateDir), "data")}); err == nil || !strings.Contains(err.Error(), "want 0700") {
 		t.Fatalf("Run() error = %v, want insecure directory permission rejection", err)
 	}
 	assertMode(t, stateDir, 0o755)
@@ -673,11 +746,16 @@ type runningDaemon struct {
 
 func startDaemonAt(t *testing.T, stateDir string) *runningDaemon {
 	t.Helper()
+	return startDaemonAtWithData(t, stateDir, filepath.Join(filepath.Dir(stateDir), "data"))
+}
+
+func startDaemonAtWithData(t *testing.T, stateDir, dataDir string) *runningDaemon {
+	t.Helper()
 	installDaemonFakePi(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- daemon.Run(ctx, daemon.Config{StateDir: stateDir})
+		errCh <- daemon.Run(ctx, daemon.Config{StateDir: stateDir, DataDir: dataDir})
 	}()
 	running := &runningDaemon{
 		t:          t,
@@ -697,6 +775,11 @@ func TestDaemonPiHelperProcess(t *testing.T) {
 	if len(arguments) == 1 && arguments[0] == "--version" {
 		fmt.Fprintln(os.Stdout, "0.84.3")
 		os.Exit(0)
+	}
+	if marker := os.Getenv("PI_LEARNLOOP_EVALUATOR_MARKER"); marker != "" {
+		if err := os.WriteFile(marker, []byte("called"), 0o600); err != nil {
+			os.Exit(93)
+		}
 	}
 
 	lastAssistantText := `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"What behavior changed?","evidence_references":["E001"]},{"id":"Q2","kind":"code_specific","text":"Which boundary matters?","evidence_references":["E001"]},{"id":"Q3","kind":"go_backend","text":"How would a Go test cover this?","evidence_references":[]}]}`
@@ -868,6 +951,30 @@ func waitForChangedFile(t *testing.T, path string, previous []byte) []byte {
 func quoted(value string) string {
 	content, _ := json.Marshal(value)
 	return string(content)
+}
+
+func daemonHistoryStart(root string) history.Start {
+	questionPrompt := prompts.EvaluatorQuestionGenerationV1Metadata()
+	assessmentPrompt := prompts.EvaluatorAnswerAssessmentV1Metadata()
+	return history.Start{
+		CanonicalRoot:           root,
+		StartedAt:               time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+		BaseRevision:            strings.Repeat("a", 40),
+		HeadRevision:            strings.Repeat("c", 40),
+		EvidenceManifestSHA256:  strings.Repeat("b", 64),
+		QuestionSchemaVersion:   evaluator.QuestionSetSchemaVersion,
+		AssessmentSchemaVersion: evaluator.AssessmentTurnSchemaVersion,
+		QuestionPrompt: history.PromptProvenance{
+			ID: questionPrompt.ID, Version: questionPrompt.Version, SHA256: questionPrompt.SHA256,
+		},
+		AssessmentPrompt: history.PromptProvenance{
+			ID: assessmentPrompt.ID, Version: assessmentPrompt.Version, SHA256: assessmentPrompt.SHA256,
+		},
+		PiVersion:     evaluator.SupportedPiVersion,
+		Provider:      "provider",
+		ModelID:       "model",
+		ThinkingLevel: "off",
+	}
 }
 
 func changedRepository(t *testing.T) (string, string, string) {

@@ -2,7 +2,7 @@
 id: durable-learning-history
 status: active
 risk: high
-current_phase: 2
+current_phase: 3
 phase_status: awaiting_approval
 updated: 2026-09-01
 ---
@@ -462,3 +462,4 @@ No automated verification may contact a provider.
 - `Resolved 2026-09-01` — The user accepted ADR-0005's persisted field allowlist, including the canonical local repository root and non-secret model/prompt provenance.
 - `Resolved 2026-09-01` — The user explicitly authorized `modernc.org/sqlite v1.35.0` and its complete transitive module graph for Phase 1.
 - `Resolved 2026-09-01` — The accepted non-destructive policy adds no automatic retention, deletion, export, or repair in this task.
+- `Resolved 2026-09-01` — The user explicitly authorized durable-learning-history Phase 2 implementation.
