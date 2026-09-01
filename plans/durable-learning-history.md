@@ -1,9 +1,9 @@
 ---
 id: durable-learning-history
-status: draft
+status: active
 risk: high
-current_phase: 1
-phase_status: planned
+current_phase: 2
+phase_status: awaiting_approval
 updated: 2026-09-01
 ---
 
@@ -19,7 +19,7 @@ Recovery in this task means recovering committed history and converting unfinish
 
 The completed `answer-assessment-workflow` plan proves the full learning interaction, but the result exists only in one HTTP response. The daemon removes the assessment entry after a complete turn, clears all volatile entries on shutdown, and has no history read operation. A restart, lost response, or process crash therefore leaves no local evidence that the user completed or attempted the learning loop.
 
-Persistence is high risk because it creates a long-lived data and compatibility boundary, introduces the first third-party Go runtime dependency, changes startup behavior, and must not weaken the privacy and no-retry guarantees accepted in ADR-0003 and ADR-0004. ADR-0005 is proposed with this plan and must be accepted before implementation.
+Persistence is high risk because it creates a long-lived data and compatibility boundary, introduces the first third-party Go runtime dependency, changes startup behavior, and must not weaken the privacy and no-retry guarantees accepted in ADR-0003 and ADR-0004. ADR-0005 and Phase 1 were accepted and explicitly authorized on 2026-09-01.
 
 ## 3. Current Behavior
 
@@ -459,6 +459,6 @@ No automated verification may contact a provider.
 
 ## 14. Open Questions
 
-- `TODO / Need Confirmation` — Accept ADR-0005's persisted field allowlist, including the canonical local repository root and non-secret model/prompt provenance.
-- `TODO / Need Confirmation` — Explicitly authorize `modernc.org/sqlite v1.35.0` and the exact transitive module graph resolved from its Go 1.21-compatible `go.mod`. Phase 1 must not run `go get` or modify dependencies before this approval.
-- `TODO / Need Confirmation` — Accept the proposed non-destructive policy: no automatic retention, deletion, export, or repair in this task. Those capabilities require a later plan based on an explicit user need.
+- `Resolved 2026-09-01` — The user accepted ADR-0005's persisted field allowlist, including the canonical local repository root and non-secret model/prompt provenance.
+- `Resolved 2026-09-01` — The user explicitly authorized `modernc.org/sqlite v1.35.0` and its complete transitive module graph for Phase 1.
+- `Resolved 2026-09-01` — The accepted non-destructive policy adds no automatic retention, deletion, export, or repair in this task.

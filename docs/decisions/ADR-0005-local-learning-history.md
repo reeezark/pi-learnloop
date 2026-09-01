@@ -1,6 +1,6 @@
 ---
 id: ADR-0005
-status: proposed
+status: accepted
 date: 2026-09-01
 supersedes: none
 ---
@@ -31,7 +31,7 @@ The inspected Go driver choices have material trade-offs:
 
 ## Decision
 
-This decision remains proposed. Acceptance authorizes the architecture and persisted schema boundary, but implementation still requires the explicit phase gates in `plans/durable-learning-history.md`.
+This decision was accepted on 2026-09-01. Implementation remains subject to the explicit phase gates in `plans/durable-learning-history.md`; Phase 1 was authorized separately on the same date.
 
 ### 1. Persist only allowlisted, source-free learning facts
 
@@ -178,4 +178,4 @@ Rejected. The user would reasonably believe a durable result exists. The additiv
 - Schema version 1, statuses, persisted label/verdict values, record ID format, and history response become compatibility-sensitive after implementation.
 - `modernc.org/sqlite v1.35.0` introduces the first third-party Go runtime dependency and a transitive graph. It preserves Go 1.21 and CGO-free verification but is older than current driver releases.
 - The database grows until a separately approved retention/deletion design exists; records are bounded metadata rather than source-bearing blobs.
-- Accepting this ADR does not authorize implementation. The user must separately authorize each phase, beginning with the exact Phase 1 dependency change.
+- The ADR acceptance does not authorize later implementation phases. Each phase still requires the plan's explicit high-risk authorization gate.

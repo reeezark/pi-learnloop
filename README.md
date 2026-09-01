@@ -16,15 +16,16 @@ Implemented:
 - a 30-minute, eight-entry, 1-MiB bounded in-memory assessment state machine with atomic initial/F1 submission and deterministic Go label aggregation;
 - an additive assessment descriptor, strict authenticated `/v1/assessment-turns` route, and thin answer/F1/result UI with no client retries;
 - a released embedded assessment prompt and production Pi 0.84.3 RPC adapter that starts a fresh isolated process for the initial assessment and, when requested, one F1 assessment;
-- deterministic service, protocol, concurrency, cancellation, extension, and fake-process tests for the complete volatile answer flow.
+- deterministic service, protocol, concurrency, cancellation, extension, and fake-process tests for the complete volatile answer flow;
+- a standalone protected SQLite history foundation with schema v1 migrations, source-free record validation, transactional terminal updates, repository-scoped queries, and startup interruption marking; it is not yet constructed by the daemon.
 
 Not implemented:
 
-- learning-history persistence or SQLite;
+- daemon-connected learning-history recording and the user-visible history query;
 - SSE, background jobs, Session indexing, or automatic reminders;
 - npm publication or release automation.
 
-The preview half of `/learn` never contacts a model provider. After confirmation, the daemon consumes the reviewed continuation once and starts a separate no-session, no-tools Pi RPC process using the active model. Successful questions retain the exact validated input in bounded daemon memory so the user can submit Q1/Q2/Q3 answers. The initial assessment starts a new isolated Pi process; one answered F1 may start one final isolated process. Source-bearing inputs, answers, evaluator output, and RPC streams remain in memory, and no learning record is saved.
+The preview half of `/learn` never contacts a model provider. After confirmation, the daemon consumes the reviewed continuation once and starts a separate no-session, no-tools Pi RPC process using the active model. Successful questions retain the exact validated input in bounded daemon memory so the user can submit Q1/Q2/Q3 answers. The initial assessment starts a new isolated Pi process; one answered F1 may start one final isolated process. Source-bearing inputs, answers, evaluator output, and RPC streams remain in memory. The current daemon does not construct the new history store, so `/learn` still saves no learning record until an explicitly authorized integration phase.
 
 ## Requirements
 
@@ -93,7 +94,8 @@ The package has no third-party runtime npm dependency. `@earendil-works/pi-codin
 - A successful preview may retain only its bounded evidence in daemon memory for five minutes. The opaque continuation is single-use, has fixed count and byte limits, and is removed on expiry or daemon shutdown.
 - Confirmation sends only the opaque continuation ID and non-secret active model identifiers to the daemon. The daemon builds the evaluator input from the exact retained preview without rereading the repository.
 - Successful production questions may retain their exact validated input for at most thirty minutes under an eight-entry/1-MiB cap. Initial answers and F1 are bounded to 4 KiB each, submissions are atomically single-consume, and completed, failed, expired, or concurrent IDs share a non-retryable unavailable result.
-- Assessment state, source, answers, prompts, model output, and feedback are never persisted or logged.
+- Current daemon assessment state, source, answers, prompts, model output, and feedback are never persisted or logged.
+- The standalone history store accepts only canonical repository identity, revisions, manifest/schema/prompt/model provenance, safe lifecycle status, deterministic label, and Q1/Q2/Q3 kinds/verdicts. It rejects symlinked, overbroad, wrong-owner, hard-linked, non-local, corrupt, or newer-schema storage without automatic repair; current daemon behavior does not open it yet.
 - Production question generation and every assessment turn start a frozen, symlink-resolved Pi 0.84.3 executable directly without a shell. Sessions, tools, extensions, skills, prompt templates, themes, context files, and project approval are disabled.
 - Only the selected excerpts and non-secret bundle provenance enter the Pi-managed model request. Credentials never enter HTTP, argv, prompts, logs, persisted records, or model-visible content.
 - RPC runtime, stdout, stderr, and final output are bounded; malformed output, discovered commands, tool events, retries, compaction, timeout, cancellation, or child failure fail closed. The child is always terminated and reaped.
