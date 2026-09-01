@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/reeezark/pi-learnloop/agent/prompts"
 	"github.com/reeezark/pi-learnloop/internal/evaluator"
 )
 
@@ -46,6 +47,10 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	defer lock.release()
+	var questionEvaluator evaluator.QuestionEvaluator
+	if piEvaluator, err := evaluator.NewPiRPCEvaluator(ctx, prompts.EvaluatorQuestionGenerationV1()); err == nil {
+		questionEvaluator = piEvaluator
+	}
 
 	instanceID, err := randomID(16)
 	if err != nil {
@@ -84,7 +89,7 @@ func Run(ctx context.Context, config Config) error {
 	server := &http.Server{
 		Handler: newHandler(instanceID, listener.Addr().String(), token, serverServices{
 			continuations:     continuations,
-			questionEvaluator: evaluator.DeterministicEvaluator{},
+			questionEvaluator: questionEvaluator,
 		}),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,

@@ -215,7 +215,7 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
     }
     const confirmed = await context.ui.confirm(
       "Generate learning questions?",
-      "The current Phase 2 evaluator will use only the selected excerpts shown above and runs locally without contacting a model. Continue?",
+      "One evaluation will send only the selected excerpts shown above to your configured model. This may incur provider cost, and Pi/provider transport may retry transient network failures according to your Pi configuration. Continue?",
     );
     if (!confirmed) {
       return;

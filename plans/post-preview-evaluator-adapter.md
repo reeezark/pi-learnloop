@@ -1,9 +1,9 @@
 ---
 id: post-preview-evaluator-adapter
-status: active
+status: complete
 risk: high
 current_phase: 3
-phase_status: awaiting_approval
+phase_status: complete
 updated: 2026-09-01
 ---
 
@@ -150,7 +150,7 @@ Accept ADR-0003 before changing product behavior. It records these proposed long
 - credentials remain loaded and used by Pi, never supplied in HTTP JSON, command arguments, prompts, logs, or persisted records;
 - runtime question output is strict JSON validated by Pi LearnLoop and fails closed on any mismatch.
 
-ADR-0003 was accepted and Phases 1-2 were authorized and completed on 2026-09-01. Phase 3 remains separately gated.
+ADR-0003 and all three implementation phases were explicitly authorized and completed on 2026-09-01.
 
 ### 8.2 Add a bounded, single-use continuation store
 
@@ -403,4 +403,4 @@ The design investigation resolved the eight blocking questions on 2026-09-01:
 7. `Resolved`: disable agent retry and auto-compaction through correlated RPC commands before prompting. Pi LearnLoop performs no product retry. The supported Pi configuration keeps provider retries at the documented default of zero and discloses that Pi/provider transport settings remain external.
 8. `Resolved`: evaluator compatibility is exactly Pi 0.84.3 until adapter contract tests approve another version.
 
-ADR-0003 and `post-preview-evaluator-adapter` Phases 1-2 were explicitly accepted, implemented, and verified on 2026-09-01. Phase 3 remains unauthorized until the Phase 2 checkpoint is complete and the user explicitly approves it.
+ADR-0003 and all three `post-preview-evaluator-adapter` phases were explicitly accepted, implemented, and verified on 2026-09-01. Any answer, follow-up, scoring, or persistence workflow requires a new code investigation and plan.

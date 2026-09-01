@@ -339,7 +339,9 @@ test("declining after the visible preview never sends a continuation request", a
   assert.equal(questionRequests, 0);
   assert.equal(confirmations.length, 1);
   assert.match(confirmations[0]?.message ?? "", /selected excerpts shown above/);
-  assert.match(confirmations[0]?.message ?? "", /without contacting a model/);
+  assert.match(confirmations[0]?.message ?? "", /configured model/);
+  assert.match(confirmations[0]?.message ?? "", /provider cost/);
+  assert.match(confirmations[0]?.message ?? "", /transport may retry/);
   assert.match(notifications[0] ?? "", /Evidence preview/);
 });
 

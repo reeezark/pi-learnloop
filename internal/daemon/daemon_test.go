@@ -1,11 +1,13 @@
 package daemon_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -77,6 +79,40 @@ func TestRunPublishesLoopbackStatus(t *testing.T) {
 	if status.ProtocolVersion != 1 || status.InstanceID != descriptor.InstanceID || status.Status != "ready" {
 		t.Fatalf("status = %#v, want protocol 1, matching instance, and ready", status)
 	}
+}
+
+func TestRunPublishesDiscoveryOnlyAfterEvaluatorPreflight(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "runtime")
+	binDirectory := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "preflight-started")
+	fakePi := filepath.Join(binDirectory, "pi")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  : > \"$PI_LEARNLOOP_PREFLIGHT_MARKER\"\n  sleep 1\n  printf '0.84.3\\n'\n  exit 0\nfi\nexit 17\n"
+	if err := os.WriteFile(fakePi, []byte(script), 0o700); err != nil {
+		t.Fatalf("WriteFile(fake Pi): %v", err)
+	}
+	t.Setenv("PATH", binDirectory)
+	t.Setenv("PI_LEARNLOOP_PREFLIGHT_MARKER", marker)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- daemon.Run(ctx, daemon.Config{StateDir: stateDir})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("Run() shutdown error = %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("Run() did not stop after cancellation")
+		}
+	})
+
+	waitForFile(t, marker)
+	assertNotExist(t, filepath.Join(stateDir, "daemon.json"))
+	_ = waitForDescriptor(t, filepath.Join(stateDir, "daemon.json"))
 }
 
 func TestAuthorizedClientCanRequestEvidencePreview(t *testing.T) {
@@ -637,6 +673,7 @@ type runningDaemon struct {
 
 func startDaemonAt(t *testing.T, stateDir string) *runningDaemon {
 	t.Helper()
+	installDaemonFakePi(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
@@ -650,6 +687,67 @@ func startDaemonAt(t *testing.T, stateDir string) *runningDaemon {
 	}
 	t.Cleanup(running.stop)
 	return running
+}
+
+func TestDaemonPiHelperProcess(t *testing.T) {
+	if os.Getenv("PI_LEARNLOOP_DAEMON_FAKE_PI") != "1" {
+		return
+	}
+	arguments := argumentsAfterDoubleDash(os.Args)
+	if len(arguments) == 1 && arguments[0] == "--version" {
+		fmt.Fprintln(os.Stdout, "0.84.3")
+		os.Exit(0)
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			os.Exit(0)
+		}
+		var command map[string]any
+		if json.Unmarshal(line, &command) != nil {
+			os.Exit(91)
+		}
+		id, _ := command["id"].(string)
+		kind, _ := command["type"].(string)
+		switch kind {
+		case "set_auto_retry", "set_auto_compaction", "prompt":
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true})
+			if kind == "prompt" {
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "agent_start"})
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "agent_settled"})
+			}
+		case "get_commands":
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"commands": []any{}}})
+		case "get_last_assistant_text":
+			questionSet := `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"What behavior changed?","evidence_references":["E001"]},{"id":"Q2","kind":"code_specific","text":"Which boundary matters?","evidence_references":["E001"]},{"id":"Q3","kind":"go_backend","text":"How would a Go test cover this?","evidence_references":[]}]}`
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"text": questionSet}})
+		default:
+			os.Exit(92)
+		}
+	}
+}
+
+func installDaemonFakePi(t *testing.T) {
+	t.Helper()
+	binDirectory := t.TempDir()
+	fakePi := filepath.Join(binDirectory, "pi")
+	script := fmt.Sprintf("#!/bin/sh\nexec %q -test.run '^TestDaemonPiHelperProcess$' -- \"$@\"\n", os.Args[0])
+	if err := os.WriteFile(fakePi, []byte(script), 0o700); err != nil {
+		t.Fatalf("WriteFile(fake Pi): %v", err)
+	}
+	t.Setenv("PI_LEARNLOOP_DAEMON_FAKE_PI", "1")
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func argumentsAfterDoubleDash(arguments []string) []string {
+	for index, argument := range arguments {
+		if argument == "--" {
+			return arguments[index+1:]
+		}
+	}
+	return nil
 }
 
 func (running *runningDaemon) stop() {
