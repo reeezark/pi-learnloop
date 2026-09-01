@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/reeezark/pi-learnloop/agent/prompts"
+	"github.com/reeezark/pi-learnloop/internal/assessment"
 	"github.com/reeezark/pi-learnloop/internal/evaluator"
 )
 
@@ -85,11 +86,14 @@ func Run(ctx context.Context, config Config) error {
 	defer removeRuntimeFiles(stateDir, instanceID)
 	continuations := newContinuationStore()
 	defer continuations.clear()
+	assessments := assessment.New(nil)
+	defer assessments.Close()
 
 	server := &http.Server{
 		Handler: newHandler(instanceID, listener.Addr().String(), token, serverServices{
 			continuations:     continuations,
 			questionEvaluator: questionEvaluator,
+			assessments:       assessments,
 		}),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,

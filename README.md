@@ -1,6 +1,6 @@
 # Pi LearnLoop
 
-Pi LearnLoop is a local learning companion for Go developers who use the Pi coding agent. Its current development slice lets you manually choose a Git changeset with `/learn`, inspect the changed-Go evidence, explicitly approve sending only those excerpts to your configured model, and receive three evidence-backed learning questions.
+Pi LearnLoop is a local learning companion for Go developers who use the Pi coding agent. Its current production slice lets you manually choose a Git changeset with `/learn`, inspect the changed-Go evidence, explicitly approve sending only those excerpts to your configured model, and receive three evidence-backed learning questions. A bounded answer-assessment lifecycle and its Pi UI are implemented and deterministically tested, but the production assessment model adapter remains deliberately unavailable until the separately authorized Phase 3.
 
 ## Current Status
 
@@ -12,16 +12,19 @@ Implemented:
 - preview output containing changed files, mapped symbols, approximate excerpt bytes, and truncation details;
 - a five-minute, in-memory, single-use continuation that retains the exact bounded preview;
 - an authenticated `/v1/question-sets` route and isolated Pi 0.84.3 RPC evaluator that return exactly two code-specific questions and one Go/backend question;
-- an explicit confirmation step before the retained evidence is consumed.
+- an explicit confirmation step before the retained evidence is consumed;
+- a 30-minute, eight-entry, 1-MiB bounded in-memory assessment state machine with atomic initial/F1 submission and deterministic Go label aggregation;
+- an additive assessment descriptor, strict authenticated `/v1/assessment-turns` route, and thin answer/F1/result UI with no client retries;
+- deterministic service, protocol, concurrency, cancellation, and extension tests for the complete volatile answer flow. The production daemon advertises `evaluator_unavailable` instead of using the deterministic test adapter as a fallback.
 
 Not implemented:
 
-- answer collection, scoring, or follow-up interviews;
+- the production isolated Pi RPC adapter for answer assessment and release of the draft assessment prompt;
 - learning-history persistence or SQLite;
 - SSE, background jobs, Session indexing, or automatic reminders;
 - npm publication or release automation.
 
-The preview half of `/learn` never contacts a model provider. After confirmation, the daemon consumes the reviewed continuation once and starts a separate no-session, no-tools Pi RPC process using the active model. The evaluator result and source-bearing RPC streams remain in memory and no learning record is saved.
+The preview half of `/learn` never contacts a model provider. After confirmation, the daemon consumes the reviewed continuation once and starts a separate no-session, no-tools Pi RPC process using the active model. The evaluator result and source-bearing RPC streams remain in memory and no learning record is saved. In the current production build, the returned questions explicitly report that answer assessment is unavailable; no deterministic result is fabricated and no answer-assessment model call can occur before Phase 3.
 
 ## Requirements
 
@@ -87,6 +90,8 @@ The package has no third-party runtime npm dependency. `@earendil-works/pi-codin
 - `/learn` submits the trusted Pi working directory and the explicit Git selection. It does not send Pi credentials.
 - A successful preview may retain only its bounded evidence in daemon memory for five minutes. The opaque continuation is single-use, has fixed count and byte limits, and is removed on expiry or daemon shutdown.
 - Confirmation sends only the opaque continuation ID and non-secret active model identifiers to the daemon. The daemon builds the evaluator input from the exact retained preview without rereading the repository.
+- When an assessment evaluator is explicitly supplied through the internal seam, successful questions may retain that exact validated input for at most thirty minutes under an eight-entry/1-MiB cap. Initial answers and F1 are bounded to 4 KiB each, submissions are atomically single-consume, and completed, failed, expired, or concurrent IDs share a non-retryable unavailable result.
+- Assessment state, source, answers, prompts, model output, and feedback are never persisted or logged. The production daemon currently retains no assessment because its Phase 3 adapter is absent.
 - Production evaluation starts the frozen, symlink-resolved Pi 0.84.3 executable directly without a shell. Sessions, tools, extensions, skills, prompt templates, themes, context files, and project approval are disabled.
 - Only the selected excerpts and non-secret bundle provenance enter the Pi-managed model request. Credentials never enter HTTP, argv, prompts, logs, persisted records, or model-visible content.
 - RPC runtime, stdout, stderr, and final output are bounded; malformed output, discovered commands, tool events, retries, compaction, timeout, cancellation, or child failure fail closed. The child is always terminated and reaped.

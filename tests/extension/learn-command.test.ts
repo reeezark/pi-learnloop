@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createLearnCommand,
   EvidenceClientError,
+  type AssessmentResult,
   type LearnClient,
   type EvidencePreviewResponse,
   formatPreview,
@@ -438,6 +439,207 @@ test("missing supported model metadata disables continuation before confirmation
   assert.equal(questionRequests, 0);
   assert.match(notifications.at(-1) ?? "", /active model selection is unsupported/);
 });
+
+test("collects three answers, confirms sharing, and renders the Go-derived result", async () => {
+  const submissions: unknown[] = [];
+  const notifications: string[] = [];
+  const inputs = ["HEAD", "first answer", "second answer", "third answer"];
+  const confirmations: Array<{ title: string; message: string }> = [];
+  const client: LearnClient = {
+    async preview() {
+      return continuablePreview();
+    },
+    async questions() {
+      return assessableQuestions();
+    },
+    async assess(id, submission) {
+      submissions.push({ id, submission });
+      return completeAssessment();
+    },
+  };
+  const context = assessmentContext(inputs, confirmations, notifications);
+
+  await createLearnCommand(client, "0.84.3")("", context);
+
+  assert.deepEqual(submissions, [{
+    id: `as1-${"B".repeat(43)}`,
+    submission: {
+      stage: "initial_answers",
+      answers: [
+        { question_id: "Q1", text: "first answer" },
+        { question_id: "Q2", text: "second answer" },
+        { question_id: "Q3", text: "third answer" },
+      ],
+    },
+  }]);
+  assert.equal(confirmations.length, 2);
+  assert.match(confirmations[1]?.message ?? "", /same selected excerpts and your three answers/);
+  assert.match(confirmations[1]?.message ?? "", /one additional evaluation/);
+  assert.match(notifications.at(-1) ?? "", /Learning assessment: partial/);
+  assert.match(notifications.at(-1) ?? "", /Q1 — demonstrated/);
+});
+
+test("submits one answered F1 and never asks for a second follow-up", async () => {
+  const submissions: unknown[] = [];
+  const notifications: string[] = [];
+  const inputs = ["HEAD", "first", "second", "third", "follow-up answer"];
+  let calls = 0;
+  const client: LearnClient = {
+    async preview() {
+      return continuablePreview();
+    },
+    async questions() {
+      return assessableQuestions();
+    },
+    async assess(id, submission) {
+      calls += 1;
+      submissions.push({ id, submission });
+      if (calls === 1) {
+        return {
+          turn: {
+            schema_version: 1,
+            disposition: "follow_up",
+            follow_up: {
+              id: "F1",
+              target_question_id: "Q1",
+              text: "Which selected branch supports that answer?",
+              evidence_references: ["E001"],
+            },
+            evaluations: [],
+          },
+        };
+      }
+      return completeAssessment();
+    },
+  };
+  const context = assessmentContext(inputs, [], notifications);
+
+  await createLearnCommand(client, "0.84.3")("", context);
+
+  assert.equal(submissions.length, 2);
+  assert.deepEqual(submissions[1], {
+    id: `as1-${"B".repeat(43)}`,
+    submission: { stage: "follow_up_answer", follow_up_id: "F1", answer: "follow-up answer" },
+  });
+  assert.ok(notifications.some((message) => /Follow-up for Q1/.test(message)));
+  assert.match(notifications.at(-1) ?? "", /Learning assessment: partial/);
+});
+
+test("cancelling an answer stops locally before assessment confirmation or submission", async () => {
+  let assessmentRequests = 0;
+  const confirmations: Array<{ title: string; message: string }> = [];
+  const notifications: string[] = [];
+  const inputs: Array<string | undefined> = ["HEAD", "first", undefined];
+  const client: LearnClient = {
+    async preview() {
+      return continuablePreview();
+    },
+    async questions() {
+      return assessableQuestions();
+    },
+    async assess() {
+      assessmentRequests += 1;
+      return completeAssessment();
+    },
+  };
+  const context = assessmentContext(inputs, confirmations, notifications);
+
+  await createLearnCommand(client, "0.84.3")("", context);
+
+  assert.equal(assessmentRequests, 0);
+  assert.equal(confirmations.length, 1);
+  assert.match(notifications.at(-1) ?? "", /Learning questions/);
+});
+
+test("renders questions but asks for no answers when assessment is unavailable", async () => {
+  const inputs: Array<string | undefined> = ["HEAD"];
+  const confirmations: Array<{ title: string; message: string }> = [];
+  const notifications: string[] = [];
+  let assessmentRequests = 0;
+  const client: LearnClient = {
+    async preview() {
+      return continuablePreview();
+    },
+    async questions() {
+      const questions = assessableQuestions();
+      return { ...questions, assessment: { available: false, reason: "evaluator_unavailable" } };
+    },
+    async assess() {
+      assessmentRequests += 1;
+      return completeAssessment();
+    },
+  };
+  const context = assessmentContext(inputs, confirmations, notifications);
+
+  await createLearnCommand(client, "0.84.3")("", context);
+
+  assert.equal(assessmentRequests, 0);
+  assert.equal(inputs.length, 0);
+  assert.equal(confirmations.length, 1);
+  assert.match(notifications.at(-1) ?? "", /answer assessment is not available yet/);
+});
+
+function assessmentContext(
+  inputs: Array<string | undefined>,
+  confirmations: Array<{ title: string; message: string }>,
+  notifications: string[],
+): LearnCommandContext {
+  return {
+    cwd: "/work/repository",
+    hasUI: true,
+    model: { provider: "anthropic", id: "claude-test" },
+    thinkingLevel: "off",
+    isProjectTrusted: () => true,
+    ui: {
+      async select() {
+        return "Working tree against a base revision";
+      },
+      async input() {
+        return inputs.shift();
+      },
+      async confirm(title, message) {
+        confirmations.push({ title, message });
+        return true;
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  };
+}
+
+function assessableQuestions() {
+  return {
+    schema_version: 1 as const,
+    disposition: "questions" as const,
+    questions: [
+      { id: "Q1" as const, kind: "code_specific" as const, text: "Explain the behavior.", evidence_references: ["E001"] },
+      { id: "Q2" as const, kind: "code_specific" as const, text: "Which edge matters?", evidence_references: ["E001"] },
+      { id: "Q3" as const, kind: "go_backend" as const, text: "How should it be tested?", evidence_references: [] },
+    ],
+    assessment: {
+      available: true as const,
+      id: `as1-${"B".repeat(43)}`,
+      expires_at: "2026-09-01T12:30:00Z",
+    },
+  };
+}
+
+function completeAssessment(): Extract<AssessmentResult, { label: string }> {
+  return {
+    turn: {
+      schema_version: 1 as const,
+      disposition: "complete" as const,
+      follow_up: null,
+      evaluations: [
+        { question_id: "Q1" as const, verdict: "demonstrated" as const, feedback: "First is grounded.", evidence_references: ["E001"] },
+        { question_id: "Q2" as const, verdict: "partial" as const, feedback: "Second omits one path.", evidence_references: ["E001"] },
+        { question_id: "Q3" as const, verdict: "not_demonstrated" as const, feedback: "Third needs a test case.", evidence_references: [] },
+      ],
+    },
+    label: "partial" as const,
+  };
+}
 
 function continuablePreview(): EvidencePreviewResponse {
   return {

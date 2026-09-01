@@ -2,7 +2,7 @@
 id: answer-assessment-workflow
 status: active
 risk: high
-current_phase: 2
+current_phase: 3
 phase_status: awaiting_approval
 updated: 2026-09-01
 ---
@@ -29,7 +29,7 @@ Adding answers crosses new high-risk seams:
 - the extension must collect answers without moving assessment rules into TypeScript;
 - a model process must not remain alive while waiting for human input.
 
-ADR-0004 was accepted on 2026-09-01 and Phase 1 was explicitly authorized. Later phases remain behind separate stop gates.
+ADR-0004 was accepted on 2026-09-01. Phases 1 and 2 are complete; Phase 3 remains behind a separate stop gate.
 
 ## 3. Current Behavior
 
@@ -308,7 +308,7 @@ Acceptance criteria:
 
 ### Phase 2 — Volatile assessment lifecycle and deterministic end-to-end flow
 
-Status: awaiting explicit authorization. No Phase 2 implementation is included in the Phase 1 commit.
+Status: complete on 2026-09-01. See `docs/checkpoints/answer-assessment-workflow-phase-2.md`.
 
 Goal: implement the in-memory assessment module, additive authenticated protocol, answer UI, and deterministic end-to-end tests while production assessment remains unavailable until Phase 3.
 
@@ -342,6 +342,8 @@ Acceptance criteria:
 - production daemon behavior never returns a fabricated deterministic assessment when the production adapter is absent.
 
 ### Phase 3 — Isolated Pi RPC assessment adapter
+
+Status: awaiting explicit authorization.
 
 Goal: release and embed the assessment prompt, wire the production Pi adapter through the assessment module, and verify every model turn with a fake executable while keeping live smoke opt-in.
 

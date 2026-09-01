@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/reeezark/pi-learnloop/internal/assessment"
 	"github.com/reeezark/pi-learnloop/internal/evaluator"
 	"github.com/reeezark/pi-learnloop/internal/evidence"
 )
@@ -24,6 +25,7 @@ import (
 const (
 	maxRequestBytes            = 16 * 1024
 	maxQuestionSetRequestBytes = 4 * 1024
+	maxAssessmentRequestBytes  = 16 * 1024
 	evidenceTimeout            = 30 * time.Second
 	evaluationTimeout          = 120 * time.Second
 	maxFiles                   = 20
@@ -99,9 +101,18 @@ type questionSetModelRequest struct {
 	ThinkingLevel string `json:"thinking_level"`
 }
 
+type assessmentTurnRequest struct {
+	AssessmentID string                       `json:"assessment_id"`
+	Stage        evaluator.AssessmentStage    `json:"stage"`
+	Answers      []evaluator.AssessmentAnswer `json:"answers"`
+	FollowUpID   string                       `json:"follow_up_id"`
+	Answer       string                       `json:"answer"`
+}
+
 type serverServices struct {
 	continuations     *continuationStore
 	questionEvaluator evaluator.QuestionEvaluator
+	assessments       *assessment.Service
 }
 
 func newHandler(instanceID, authority, token string, services serverServices) http.Handler {
@@ -119,6 +130,8 @@ func newHandler(instanceID, authority, token string, services serverServices) ht
 			handleEvidencePreview(response, request, token, services)
 		case "/v1/question-sets":
 			handleQuestionSet(response, request, token, services)
+		case "/v1/assessment-turns":
+			handleAssessmentTurn(response, request, token, services)
 		default:
 			writeError(response, http.StatusNotFound, "not_found", "route not found")
 		}
@@ -311,10 +324,97 @@ func handleQuestionSet(response http.ResponseWriter, request *http.Request, toke
 		writeError(response, http.StatusBadGateway, "evaluator_failed", "question evaluation failed")
 		return
 	}
+	descriptor := assessment.Descriptor{Available: false, Reason: "evaluator_unavailable"}
+	if result.Disposition == evaluator.DispositionInsufficientEvidence {
+		descriptor.Reason = "insufficient_evidence"
+	} else if services.assessments != nil {
+		descriptor, err = services.assessments.Start(input, result, selection)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "internal_error", "internal error")
+			return
+		}
+	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"protocol_version": protocolVersion,
 		"question_set":     result,
+		"assessment":       descriptor,
 	})
+}
+
+func handleAssessmentTurn(response http.ResponseWriter, request *http.Request, token string, services serverServices) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if !authorized(request, token) {
+		response.Header().Set("WWW-Authenticate", "PiLearnLoop")
+		writeError(response, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(response, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(response, request.Body, maxAssessmentRequestBytes)
+	content, err := io.ReadAll(request.Body)
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+			return
+		}
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	var payload assessmentTurnRequest
+	if err := decodeStrictJSON(content, &payload); err != nil || !hasExactAssessmentTurnFields(content) {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	if !assessment.ValidID(payload.AssessmentID) {
+		writeError(response, http.StatusConflict, "assessment_unavailable", "assessment is unavailable")
+		return
+	}
+	if services.assessments == nil {
+		writeError(response, http.StatusConflict, "assessment_unavailable", "assessment is unavailable")
+		return
+	}
+
+	submission := assessment.Submission{
+		Stage:      payload.Stage,
+		Answers:    payload.Answers,
+		FollowUpID: payload.FollowUpID,
+		Answer:     payload.Answer,
+	}
+	evaluationCtx, cancel := context.WithTimeout(request.Context(), evaluationTimeout)
+	defer cancel()
+	result, err := services.assessments.Submit(evaluationCtx, payload.AssessmentID, submission)
+	if err != nil {
+		switch {
+		case errors.Is(err, assessment.ErrInvalidSubmission):
+			writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		case errors.Is(err, assessment.ErrUnavailable), errors.Is(err, assessment.ErrClosed):
+			writeError(response, http.StatusConflict, "assessment_unavailable", "assessment is unavailable")
+		case errors.Is(evaluationCtx.Err(), context.DeadlineExceeded):
+			writeError(response, http.StatusGatewayTimeout, "evaluator_timeout", "answer evaluation timed out")
+		case evaluator.ContractErrorCodeOf(err) == evaluator.ContractErrorInvalidOutput:
+			writeError(response, http.StatusBadGateway, "evaluator_invalid_output", "answer evaluator returned an invalid result")
+		default:
+			writeError(response, http.StatusBadGateway, "evaluator_failed", "answer evaluation failed")
+		}
+		return
+	}
+	payloadResponse := map[string]any{
+		"protocol_version": protocolVersion,
+		"assessment_turn":  result.Turn,
+	}
+	if result.Label != "" {
+		payloadResponse["label"] = result.Label
+	}
+	writeJSON(response, http.StatusOK, payloadResponse)
 }
 
 func hasExactQuestionSetFields(content []byte) bool {
@@ -324,6 +424,38 @@ func hasExactQuestionSetFields(content []byte) bool {
 	}
 	var model map[string]json.RawMessage
 	return json.Unmarshal(object["model"], &model) == nil && hasExactKeys(model, "provider", "id", "thinking_level")
+}
+
+func hasExactAssessmentTurnFields(content []byte) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(content, &object); err != nil {
+		return false
+	}
+	var stage evaluator.AssessmentStage
+	if err := json.Unmarshal(object["stage"], &stage); err != nil {
+		return false
+	}
+	switch stage {
+	case evaluator.AssessmentStageInitialAnswers:
+		if !hasExactKeys(object, "assessment_id", "stage", "answers") {
+			return false
+		}
+		var answers []json.RawMessage
+		if err := json.Unmarshal(object["answers"], &answers); err != nil {
+			return false
+		}
+		for _, raw := range answers {
+			var answer map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &answer); err != nil || !hasExactKeys(answer, "question_id", "text") {
+				return false
+			}
+		}
+		return true
+	case evaluator.AssessmentStageFollowUpAnswer:
+		return hasExactKeys(object, "assessment_id", "stage", "follow_up_id", "answer")
+	default:
+		return false
+	}
 }
 
 func hasExactKeys(values map[string]json.RawMessage, expected ...string) bool {

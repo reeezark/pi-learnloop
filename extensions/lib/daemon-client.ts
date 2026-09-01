@@ -8,6 +8,8 @@ import {
   type EvidenceClientErrorCode,
   type EvaluatorSelection,
   type LearnClient,
+  type AssessmentResult,
+  type AssessmentSubmission,
   type EvidencePreviewResponse,
   type EvidenceSelection,
   type QuestionSet,
@@ -16,6 +18,7 @@ import {
 const STATUS_TIMEOUT_MS = 2_000;
 const PREVIEW_TIMEOUT_MS = 35_000;
 const QUESTION_SET_TIMEOUT_MS = 130_000;
+const ASSESSMENT_TIMEOUT_MS = 130_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const SERVER_ERROR_CODES = new Set<EvidenceClientErrorCode>([
   "unauthorized",
@@ -29,6 +32,7 @@ const SERVER_ERROR_CODES = new Set<EvidenceClientErrorCode>([
   "deadline_exceeded",
   "internal_error",
   "continuation_unavailable",
+  "assessment_unavailable",
   "evaluator_failed",
   "evaluator_invalid_output",
   "evaluator_unavailable",
@@ -104,7 +108,38 @@ export class DaemonEvidenceClient implements LearnClient {
       if (!isQuestionSetResponse(result.body)) {
         throw new EvidenceClientError("protocol_mismatch", "daemon question-set response is invalid");
       }
-      return result.body.question_set;
+      return {
+        ...result.body.question_set,
+        ...(result.body.assessment === undefined ? {} : { assessment: result.body.assessment }),
+      };
+    } catch (error) {
+      throw normalizeClientError(error);
+    }
+  }
+
+  async assess(assessmentID: string, submission: AssessmentSubmission): Promise<AssessmentResult> {
+    try {
+      const { port, token } = await this.discover();
+      const result = await requestJSON(
+        port,
+        "POST",
+        "/v1/assessment-turns",
+        JSON.stringify({ assessment_id: assessmentID, ...submission }),
+        token,
+        ASSESSMENT_TIMEOUT_MS,
+      );
+      if (result.statusCode === 401) {
+        throw new EvidenceClientError("unauthorized", "authentication required");
+      }
+      if (result.statusCode !== 200) {
+        throw parseServerError(result.body);
+      }
+      if (!isAssessmentResultResponse(result.body)) {
+        throw new EvidenceClientError("protocol_mismatch", "daemon assessment response is invalid");
+      }
+      return result.body.assessment_turn.disposition === "complete"
+        ? { turn: result.body.assessment_turn, label: result.body.label! }
+        : { turn: result.body.assessment_turn };
     } catch (error) {
       throw normalizeClientError(error);
     }
@@ -364,7 +399,11 @@ function isContinuation(value: unknown): boolean {
   return ["insufficient_evidence", "capacity", "evaluator_unavailable"].includes(String(value.reason));
 }
 
-function isQuestionSetResponse(value: unknown): value is { protocol_version: 1; question_set: QuestionSet } {
+function isQuestionSetResponse(value: unknown): value is {
+  protocol_version: 1;
+  question_set: QuestionSet;
+  assessment?: QuestionSet["assessment"];
+} {
   if (!isObject(value) || value.protocol_version !== 1 || !isObject(value.question_set)) {
     return false;
   }
@@ -373,13 +412,16 @@ function isQuestionSetResponse(value: unknown): value is { protocol_version: 1; 
     return false;
   }
   if (questionSet.disposition === "insufficient_evidence") {
-    return questionSet.questions.length === 0;
+    return (
+      questionSet.questions.length === 0 &&
+      (value.assessment === undefined || isAssessmentDescriptor(value.assessment))
+    );
   }
   if (questionSet.disposition !== "questions" || questionSet.questions.length !== 3) {
     return false;
   }
   const expectedKinds = ["code_specific", "code_specific", "go_backend"];
-  return questionSet.questions.every((question, index) => {
+  const validQuestions = questionSet.questions.every((question, index) => {
     if (
       !isObject(question) ||
       question.id !== `Q${index + 1}` ||
@@ -396,6 +438,106 @@ function isQuestionSetResponse(value: unknown): value is { protocol_version: 1; 
     }
     return question.kind !== "code_specific" || question.evidence_references.length > 0;
   });
+  return validQuestions && (value.assessment === undefined || isAssessmentDescriptor(value.assessment));
+}
+
+function isAssessmentDescriptor(value: unknown): boolean {
+  if (!isObject(value) || typeof value.available !== "boolean") {
+    return false;
+  }
+  if (value.available) {
+    return (
+      hasOnlyKeys(value, "available", "id", "expires_at") &&
+      typeof value.id === "string" &&
+      /^as1-[A-Za-z0-9_-]{43}$/.test(value.id) &&
+      typeof value.expires_at === "string" &&
+      Number.isFinite(Date.parse(value.expires_at))
+    );
+  }
+  return (
+    hasOnlyKeys(value, "available", "reason") &&
+    ["insufficient_evidence", "capacity", "evaluator_unavailable"].includes(String(value.reason))
+  );
+}
+
+function isAssessmentResultResponse(value: unknown): value is {
+  protocol_version: 1;
+  assessment_turn: AssessmentResult["turn"];
+  label?: "understood" | "partial" | "review_needed";
+} {
+  if (!isObject(value) || value.protocol_version !== 1 || !isObject(value.assessment_turn)) {
+    return false;
+  }
+  const turn = value.assessment_turn;
+  if (
+    !hasOnlyKeys(turn, "schema_version", "disposition", "follow_up", "evaluations") ||
+    turn.schema_version !== 1 ||
+    !Array.isArray(turn.evaluations)
+  ) {
+    return false;
+  }
+  if (turn.disposition === "follow_up") {
+    return (
+      hasOnlyKeys(value, "protocol_version", "assessment_turn") &&
+      turn.evaluations.length === 0 &&
+      isFollowUpQuestion(turn.follow_up)
+    );
+  }
+  if (
+    turn.disposition !== "complete" ||
+    turn.follow_up !== null ||
+    turn.evaluations.length !== 3 ||
+    !["understood", "partial", "review_needed"].includes(String(value.label)) ||
+    !hasOnlyKeys(value, "protocol_version", "assessment_turn", "label")
+  ) {
+    return false;
+  }
+  return turn.evaluations.every(isQuestionEvaluation);
+}
+
+function isFollowUpQuestion(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    hasOnlyKeys(value, "id", "target_question_id", "text", "evidence_references") &&
+    value.id === "F1" &&
+    ["Q1", "Q2", "Q3"].includes(String(value.target_question_id)) &&
+    validAssessmentText(value.text) &&
+    validEvidenceReferences(value.evidence_references, value.target_question_id !== "Q3")
+  );
+}
+
+function isQuestionEvaluation(value: unknown, index: number): boolean {
+  return (
+    isObject(value) &&
+    hasOnlyKeys(value, "question_id", "verdict", "feedback", "evidence_references") &&
+    value.question_id === `Q${index + 1}` &&
+    ["demonstrated", "partial", "not_demonstrated"].includes(String(value.verdict)) &&
+    validAssessmentText(value.feedback) &&
+    validEvidenceReferences(value.evidence_references, index < 2)
+  );
+}
+
+function validAssessmentText(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    Buffer.byteLength(value, "utf8") <= 1_000 &&
+    !/[\u0000-\u001f\u007f-\u009f]/u.test(value)
+  );
+}
+
+function validEvidenceReferences(value: unknown, required: boolean): value is string[] {
+  return (
+    Array.isArray(value) &&
+    (!required || value.length > 0) &&
+    value.every((reference) => typeof reference === "string" && /^E[0-9]{3}$/.test(reference)) &&
+    new Set(value).size === value.length
+  );
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, ...keys: string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 }
 
 function isEvidenceFile(value: unknown): value is EvidencePreviewResponse["preview"]["files"][number] {

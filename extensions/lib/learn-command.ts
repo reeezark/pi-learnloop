@@ -83,10 +83,61 @@ export interface QuestionSet {
   schema_version: 1;
   disposition: "questions" | "insufficient_evidence";
   questions: Question[];
+  assessment?: AssessmentDescriptor;
 }
+
+export type AssessmentDescriptor =
+  | { available: true; id: string; expires_at: string }
+  | { available: false; reason: "insufficient_evidence" | "capacity" | "evaluator_unavailable" };
+
+export interface AssessmentAnswer {
+  question_id: "Q1" | "Q2" | "Q3";
+  text: string;
+}
+
+export type AssessmentSubmission =
+  | { stage: "initial_answers"; answers: AssessmentAnswer[] }
+  | { stage: "follow_up_answer"; follow_up_id: "F1"; answer: string };
+
+export interface FollowUpQuestion {
+  id: "F1";
+  target_question_id: "Q1" | "Q2" | "Q3";
+  text: string;
+  evidence_references: string[];
+}
+
+export interface QuestionEvaluation {
+  question_id: "Q1" | "Q2" | "Q3";
+  verdict: "demonstrated" | "partial" | "not_demonstrated";
+  feedback: string;
+  evidence_references: string[];
+}
+
+export type AssessmentResult =
+  | {
+      turn: {
+        schema_version: 1;
+        disposition: "follow_up";
+        follow_up: FollowUpQuestion;
+        evaluations: [];
+      };
+    }
+  | {
+      turn: {
+        schema_version: 1;
+        disposition: "complete";
+        follow_up: null;
+        evaluations: [QuestionEvaluation, QuestionEvaluation, QuestionEvaluation];
+      };
+      label: "understood" | "partial" | "review_needed";
+    };
 
 export interface LearnClient extends EvidencePreviewClient {
   questions(continuationID: string, selection: EvaluatorSelection): Promise<QuestionSet>;
+  assess?(
+    assessmentID: string,
+    submission: AssessmentSubmission,
+  ): Promise<AssessmentResult>;
 }
 
 export class EvidenceClientError extends Error {
@@ -115,6 +166,7 @@ export type EvidenceClientErrorCode =
   | "deadline_exceeded"
   | "internal_error"
   | "continuation_unavailable"
+  | "assessment_unavailable"
   | "evaluator_failed"
   | "evaluator_invalid_output"
   | "evaluator_unavailable"
@@ -224,6 +276,57 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
     try {
       const questionSet = await client.questions(response.continuation.id, evaluatorSelection);
       context.ui.notify(formatQuestionSet(questionSet), questionSet.disposition === "questions" ? "info" : "warning");
+      if (questionSet.disposition !== "questions" || questionSet.assessment === undefined) {
+        return;
+      }
+      if (!questionSet.assessment.available) {
+        if (questionSet.assessment.reason !== "insufficient_evidence") {
+          context.ui.notify(assessmentUnavailableMessage(questionSet.assessment.reason), "warning");
+        }
+        return;
+      }
+      if (client.assess === undefined) {
+        context.ui.notify("Answer assessment is unavailable in this client. Update Pi LearnLoop and run /learn again.", "warning");
+        return;
+      }
+
+      const answers = await collectAnswers(questionSet, context);
+      if (answers === undefined) {
+        return;
+      }
+      const assessConfirmed = await context.ui.confirm(
+        "Assess these answers?",
+        "One evaluation will send the same selected excerpts and your three answers to the configured model. This may incur provider cost. If one follow-up is needed, submitting its answer causes one additional evaluation, and Pi/provider transport may retry according to your Pi configuration. Continue?",
+      );
+      if (!assessConfirmed) {
+        return;
+      }
+
+      let assessment = await client.assess(questionSet.assessment.id, {
+        stage: "initial_answers",
+        answers,
+      });
+      if (assessment.turn.disposition === "follow_up") {
+        context.ui.notify(formatFollowUp(assessment.turn.follow_up), "info");
+        const followUpAnswer = await collectAnswer("Answer F1", assessment.turn.follow_up.text, context);
+        if (followUpAnswer === undefined) {
+          return;
+        }
+        assessment = await client.assess(questionSet.assessment.id, {
+          stage: "follow_up_answer",
+          follow_up_id: "F1",
+          answer: followUpAnswer,
+        });
+        if (assessment.turn.disposition === "follow_up") {
+          context.ui.notify("Pi LearnLoop rejected an unexpected second follow-up. Run /learn again.", "error");
+          return;
+        }
+      }
+      if (assessment.turn.disposition !== "complete" || !("label" in assessment)) {
+        context.ui.notify("Pi LearnLoop received an invalid assessment result. Run /learn again.", "error");
+        return;
+      }
+      context.ui.notify(formatAssessmentResult(assessment), "info");
     } catch (error) {
       if (error instanceof EvidenceClientError && error.code === "continuation_unavailable") {
         context.ui.notify("This evidence preview expired or was already used. Run /learn again to review a new preview.", "warning");
@@ -233,9 +336,37 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
         context.ui.notify("The question evaluator is unavailable. Run /learn again after it is ready.", "error");
         return;
       }
+      if (error instanceof EvidenceClientError && error.code === "assessment_unavailable") {
+        context.ui.notify("This assessment expired or was already submitted. Run /learn again to start a new assessment.", "warning");
+        return;
+      }
       context.ui.notify("Pi LearnLoop could not generate learning questions. Run /learn again.", "error");
     }
   };
+}
+
+async function collectAnswers(questionSet: QuestionSet, context: LearnCommandContext): Promise<AssessmentAnswer[] | undefined> {
+  const answers: AssessmentAnswer[] = [];
+  for (const question of questionSet.questions) {
+    const answer = await collectAnswer(`Answer ${question.id}`, question.text, context);
+    if (answer === undefined) {
+      return undefined;
+    }
+    answers.push({ question_id: question.id, text: answer });
+  }
+  return answers;
+}
+
+async function collectAnswer(title: string, question: string, context: LearnCommandContext): Promise<string | undefined> {
+  const answer = (await context.ui.input(title, question))?.trim();
+  if (answer === undefined || answer === "") {
+    return undefined;
+  }
+  if (Buffer.byteLength(answer, "utf8") > 4_096 || /[\u0000-\u001f\u007f-\u009f]/u.test(answer)) {
+    context.ui.notify("Answers must be at most 4 KiB and contain no control characters.", "warning");
+    return undefined;
+  }
+  return answer;
 }
 
 function activeEvaluatorSelection(context: LearnCommandContext, piVersion: string): EvaluatorSelection | undefined {
@@ -271,6 +402,12 @@ function continuationUnavailableMessage(reason: "capacity" | "evaluator_unavaila
     : "The evidence preview is available, but the question evaluator is unavailable.";
 }
 
+function assessmentUnavailableMessage(reason: "capacity" | "evaluator_unavailable"): string {
+  return reason === "capacity"
+    ? "The questions are ready, but the daemon has too many pending assessments. Run /learn again shortly."
+    : "The questions are ready, but answer assessment is not available yet.";
+}
+
 export function formatQuestionSet(questionSet: QuestionSet): string {
   if (questionSet.disposition === "insufficient_evidence") {
     return "The selected evidence is not sufficient to generate grounded learning questions.";
@@ -282,6 +419,25 @@ export function formatQuestionSet(questionSet: QuestionSet): string {
         ? ` [Evidence: ${question.evidence_references.join(", ")}]`
         : "";
       return `${index + 1}. ${question.text}${references}`;
+    }),
+  ].join("\n");
+}
+
+function formatFollowUp(question: FollowUpQuestion): string {
+  const references = question.evidence_references.length > 0
+    ? ` [Evidence: ${question.evidence_references.join(", ")}]`
+    : "";
+  return `Follow-up for ${question.target_question_id}: ${question.text}${references}`;
+}
+
+export function formatAssessmentResult(result: Extract<AssessmentResult, { label: string }>): string {
+  return [
+    `Learning assessment: ${result.label}`,
+    ...result.turn.evaluations.map((evaluation) => {
+      const references = evaluation.evidence_references.length > 0
+        ? ` [Evidence: ${evaluation.evidence_references.join(", ")}]`
+        : "";
+      return `${evaluation.question_id} — ${evaluation.verdict}: ${evaluation.feedback}${references}`;
     }),
   ].join("\n");
 }
