@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/reeezark/pi-learnloop/internal/evaluator"
 )
 
 const (
@@ -76,12 +78,17 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	defer removeRuntimeFiles(stateDir, instanceID)
+	continuations := newContinuationStore()
+	defer continuations.clear()
 
 	server := &http.Server{
-		Handler:           newHandler(instanceID, listener.Addr().String(), token),
+		Handler: newHandler(instanceID, listener.Addr().String(), token, serverServices{
+			continuations:     continuations,
+			questionEvaluator: evaluator.DeterministicEvaluator{},
+		}),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
-		WriteTimeout:      35 * time.Second,
+		WriteTimeout:      125 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    8 * 1024,
 	}

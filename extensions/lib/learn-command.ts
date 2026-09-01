@@ -49,10 +49,44 @@ export interface EvidencePreviewResponse {
       omitted_excerpt_bytes: number;
     };
   };
+  continuation?:
+    | {
+        available: true;
+        id: string;
+        expires_at: string;
+      }
+    | {
+        available: false;
+        reason: "insufficient_evidence" | "capacity" | "evaluator_unavailable";
+      };
 }
 
 export interface EvidencePreviewClient {
   preview(repository: string, selection: EvidenceSelection): Promise<EvidencePreviewResponse>;
+}
+
+export interface EvaluatorSelection {
+  pi_version: string;
+  provider: string;
+  id: string;
+  thinking_level: string;
+}
+
+export interface Question {
+  id: "Q1" | "Q2" | "Q3";
+  kind: "code_specific" | "go_backend";
+  text: string;
+  evidence_references: string[];
+}
+
+export interface QuestionSet {
+  schema_version: 1;
+  disposition: "questions" | "insufficient_evidence";
+  questions: Question[];
+}
+
+export interface LearnClient extends EvidencePreviewClient {
+  questions(continuationID: string, selection: EvaluatorSelection): Promise<QuestionSet>;
 }
 
 export class EvidenceClientError extends Error {
@@ -79,15 +113,26 @@ export type EvidenceClientErrorCode =
   | "invalid_source"
   | "analysis_failed"
   | "deadline_exceeded"
-  | "internal_error";
+  | "internal_error"
+  | "continuation_unavailable"
+  | "evaluator_failed"
+  | "evaluator_invalid_output"
+  | "evaluator_unavailable"
+  | "evaluator_timeout";
 
 export interface LearnCommandContext {
   cwd: string;
   hasUI: boolean;
+  model?: {
+    provider: string;
+    id: string;
+  };
+  thinkingLevel?: string;
   isProjectTrusted(): boolean;
   ui: {
     select(title: string, options: string[]): Promise<string | undefined>;
     input(title: string, placeholder?: string): Promise<string | undefined>;
+    confirm(title: string, message: string): Promise<boolean>;
     notify(message: string, type?: "info" | "warning" | "error"): void;
   };
 }
@@ -95,7 +140,7 @@ export interface LearnCommandContext {
 const COMMIT_RANGE = "Commit range";
 const WORKING_TREE = "Working tree against a base revision";
 
-export function createLearnCommand(client: EvidencePreviewClient) {
+export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
   return async function learnCommand(args: string, context: LearnCommandContext): Promise<void> {
     if (args.trim() !== "") {
       context.ui.notify("/learn does not accept arguments. Run it without arguments and choose a changeset.", "warning");
@@ -120,9 +165,9 @@ export function createLearnCommand(client: EvidencePreviewClient) {
       return;
     }
 
+    let response: EvidencePreviewResponse;
     try {
-      const response = await client.preview(context.cwd, selection);
-      context.ui.notify(formatPreview(response), "info");
+      response = await client.preview(context.cwd, selection);
     } catch (error) {
       if (error instanceof EvidenceClientError && error.code === "daemon_unavailable") {
         context.ui.notify(
@@ -146,8 +191,99 @@ export function createLearnCommand(client: EvidencePreviewClient) {
         return;
       }
       context.ui.notify("Pi LearnLoop could not load the evidence preview. Run /learn again.", "error");
+      return;
+    }
+
+    context.ui.notify(formatPreview(response), "info");
+    if (response.continuation === undefined) {
+      return;
+    }
+    if (!response.continuation.available) {
+      if (response.continuation.reason !== "insufficient_evidence") {
+        context.ui.notify(continuationUnavailableMessage(response.continuation.reason), "warning");
+      }
+      return;
+    }
+
+    const evaluatorSelection = activeEvaluatorSelection(context, piVersion);
+    if (evaluatorSelection === undefined) {
+      context.ui.notify(
+        "Pi LearnLoop cannot continue because this Pi version or active model selection is unsupported.",
+        "warning",
+      );
+      return;
+    }
+    const confirmed = await context.ui.confirm(
+      "Generate learning questions?",
+      "The current Phase 2 evaluator will use only the selected excerpts shown above and runs locally without contacting a model. Continue?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      const questionSet = await client.questions(response.continuation.id, evaluatorSelection);
+      context.ui.notify(formatQuestionSet(questionSet), questionSet.disposition === "questions" ? "info" : "warning");
+    } catch (error) {
+      if (error instanceof EvidenceClientError && error.code === "continuation_unavailable") {
+        context.ui.notify("This evidence preview expired or was already used. Run /learn again to review a new preview.", "warning");
+        return;
+      }
+      if (error instanceof EvidenceClientError && error.code === "evaluator_unavailable") {
+        context.ui.notify("The question evaluator is unavailable. Run /learn again after it is ready.", "error");
+        return;
+      }
+      context.ui.notify("Pi LearnLoop could not generate learning questions. Run /learn again.", "error");
     }
   };
+}
+
+function activeEvaluatorSelection(context: LearnCommandContext, piVersion: string): EvaluatorSelection | undefined {
+  const provider = context.model?.provider;
+  const id = context.model?.id;
+  const thinkingLevel = context.thinkingLevel;
+  if (
+    piVersion !== "0.84.3" ||
+    provider === undefined ||
+    !validArgumentValue(provider, 128) ||
+    id === undefined ||
+    !validArgumentValue(id, 256) ||
+    thinkingLevel === undefined ||
+    !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinkingLevel)
+  ) {
+    return undefined;
+  }
+  return { pi_version: piVersion, provider, id, thinking_level: thinkingLevel };
+}
+
+function validArgumentValue(value: string, maximumBytes: number): boolean {
+  return (
+    value.trim() !== "" &&
+    !value.startsWith("-") &&
+    Buffer.byteLength(value, "utf8") <= maximumBytes &&
+    !/[\u0000-\u001f\u007f-\u009f]/u.test(value)
+  );
+}
+
+function continuationUnavailableMessage(reason: "capacity" | "evaluator_unavailable"): string {
+  return reason === "capacity"
+    ? "The evidence preview is available, but the daemon has too many pending previews. Try /learn again shortly."
+    : "The evidence preview is available, but the question evaluator is unavailable.";
+}
+
+export function formatQuestionSet(questionSet: QuestionSet): string {
+  if (questionSet.disposition === "insufficient_evidence") {
+    return "The selected evidence is not sufficient to generate grounded learning questions.";
+  }
+  return [
+    "Learning questions",
+    ...questionSet.questions.map((question, index) => {
+      const references = question.evidence_references.length > 0
+        ? ` [Evidence: ${question.evidence_references.join(", ")}]`
+        : "";
+      return `${index + 1}. ${question.text}${references}`;
+    }),
+  ].join("\n");
 }
 
 async function collectSelection(

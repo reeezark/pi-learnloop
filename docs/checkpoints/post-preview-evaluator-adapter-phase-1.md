@@ -2,7 +2,7 @@
 id: post-preview-evaluator-adapter-phase-1
 plan: post-preview-evaluator-adapter
 phase: 1
-status: current
+status: superseded
 updated: 2026-09-01
 ---
 

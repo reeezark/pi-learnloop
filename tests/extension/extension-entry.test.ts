@@ -18,6 +18,6 @@ test("the extension registers only the user-triggered /learn command", () => {
 
   assert.equal(registrations.length, 1);
   assert.equal(registrations[0]?.name, "learn");
-  assert.match(registrations[0]?.options.description ?? "", /evidence preview/i);
+  assert.match(registrations[0]?.options.description ?? "", /three learning questions/i);
   assert.equal(typeof registrations[0]?.options.handler, "function");
 });

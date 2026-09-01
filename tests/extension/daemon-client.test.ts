@@ -256,6 +256,169 @@ test("rejects a malformed success payload before the command renders it", async 
   );
 });
 
+test("sends one authenticated continuation request with only model metadata", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "J".repeat(22);
+  const token = "K".repeat(43);
+  const requests: Array<{ method?: string; url?: string; authorization?: string; body: string }> = [];
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      requests.push({ method: request.method, url: request.url, body: "" });
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    const body = await readBody(request);
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorization: request.headers.authorization,
+      body,
+    });
+    writeJSON(response, 200, validQuestionSetResponse());
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  const result = await new DaemonEvidenceClient({ runtimeDir }).questions(`pc1-${"L".repeat(43)}`, {
+    pi_version: "0.84.3",
+    provider: "anthropic",
+    id: "claude-test",
+    thinking_level: "off",
+  });
+
+  assert.equal(result.disposition, "questions");
+  assert.equal(result.questions.length, 3);
+  assert.deepEqual(requests, [
+    { method: "GET", url: "/v1/status", body: "" },
+    {
+      method: "POST",
+      url: "/v1/question-sets",
+      authorization: `PiLearnLoop ${token}`,
+      body: JSON.stringify({
+        continuation_id: `pc1-${"L".repeat(43)}`,
+        pi_version: "0.84.3",
+        model: { provider: "anthropic", id: "claude-test", thinking_level: "off" },
+      }),
+    },
+  ]);
+});
+
+test("never retries a consumed or unavailable continuation", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "M".repeat(22);
+  const token = "N".repeat(43);
+  let statusRequests = 0;
+  let continuationRequests = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      statusRequests += 1;
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    continuationRequests += 1;
+    await readBody(request);
+    writeJSON(response, 409, {
+      protocol_version: 1,
+      error: { code: "continuation_unavailable", message: "continuation is unavailable" },
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  await assert.rejects(
+    new DaemonEvidenceClient({ runtimeDir }).questions(`pc1-${"P".repeat(43)}`, {
+      pi_version: "0.84.3",
+      provider: "anthropic",
+      id: "claude-test",
+      thinking_level: "off",
+    }),
+    (error: unknown) => error instanceof EvidenceClientError && error.code === "continuation_unavailable",
+  );
+  assert.equal(statusRequests, 1);
+  assert.equal(continuationRequests, 1);
+});
+
+test("rejects an invalid question shape before rendering", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "Q".repeat(22);
+  const token = "R".repeat(43);
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    await readBody(request);
+    const invalid = validQuestionSetResponse();
+    invalid.question_set.questions[2] = {
+      id: "Q3",
+      kind: "code_specific",
+      text: "Wrong kind",
+      evidence_references: [],
+    };
+    writeJSON(response, 200, invalid);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  await assert.rejects(
+    new DaemonEvidenceClient({ runtimeDir }).questions(`pc1-${"S".repeat(43)}`, {
+      pi_version: "0.84.3",
+      provider: "anthropic",
+      id: "claude-test",
+      thinking_level: "off",
+    }),
+    (error: unknown) => error instanceof EvidenceClientError && error.code === "protocol_mismatch",
+  );
+});
+
 async function writeProtectedFile(path: string, content: string): Promise<void> {
   await writeFile(path, content, { mode: 0o600 });
   await chmod(path, 0o600);
@@ -293,6 +456,21 @@ function emptyPreview() {
         omitted_declarations: 0,
         omitted_excerpt_bytes: 0,
       },
+    },
+  };
+}
+
+function validQuestionSetResponse() {
+  return {
+    protocol_version: 1,
+    question_set: {
+      schema_version: 1,
+      disposition: "questions",
+      questions: [
+        { id: "Q1", kind: "code_specific", text: "Explain the changed behavior?", evidence_references: ["E001"] },
+        { id: "Q2", kind: "code_specific", text: "Which edge case matters?", evidence_references: ["E001"] },
+        { id: "Q3", kind: "go_backend", text: "How would table-driven tests help?", evidence_references: [] },
+      ],
     },
   };
 }

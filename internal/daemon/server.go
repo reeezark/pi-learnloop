@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,15 +17,18 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/reeezark/pi-learnloop/internal/evaluator"
 	"github.com/reeezark/pi-learnloop/internal/evidence"
 )
 
 const (
-	maxRequestBytes = 16 * 1024
-	evidenceTimeout = 30 * time.Second
-	maxFiles        = 20
-	maxDeclarations = 100
-	maxExcerptBytes = 128 * 1024
+	maxRequestBytes            = 16 * 1024
+	maxQuestionSetRequestBytes = 4 * 1024
+	evidenceTimeout            = 30 * time.Second
+	evaluationTimeout          = 120 * time.Second
+	maxFiles                   = 20
+	maxDeclarations            = 100
+	maxExcerptBytes            = 128 * 1024
 )
 
 type previewRequest struct {
@@ -83,7 +87,24 @@ type evidenceResponse struct {
 	Truncation     truncationResponse `json:"truncation"`
 }
 
-func newHandler(instanceID, authority, token string) http.Handler {
+type questionSetRequest struct {
+	ContinuationID string                   `json:"continuation_id"`
+	PiVersion      string                   `json:"pi_version"`
+	Model          *questionSetModelRequest `json:"model"`
+}
+
+type questionSetModelRequest struct {
+	Provider      string `json:"provider"`
+	ID            string `json:"id"`
+	ThinkingLevel string `json:"thinking_level"`
+}
+
+type serverServices struct {
+	continuations     *continuationStore
+	questionEvaluator evaluator.QuestionEvaluator
+}
+
+func newHandler(instanceID, authority, token string, services serverServices) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")
 		if !validPeer(request.RemoteAddr) || request.Host != authority || hasNonEmptyHeader(request.Header, "Origin") {
@@ -95,7 +116,9 @@ func newHandler(instanceID, authority, token string) http.Handler {
 		case "/v1/status":
 			handleStatus(response, request, instanceID)
 		case "/v1/evidence-previews":
-			handleEvidencePreview(response, request, token)
+			handleEvidencePreview(response, request, token, services)
+		case "/v1/question-sets":
+			handleQuestionSet(response, request, token, services)
 		default:
 			writeError(response, http.StatusNotFound, "not_found", "route not found")
 		}
@@ -133,7 +156,7 @@ func handleStatus(response http.ResponseWriter, request *http.Request, instanceI
 	})
 }
 
-func handleEvidencePreview(response http.ResponseWriter, request *http.Request, token string) {
+func handleEvidencePreview(response http.ResponseWriter, request *http.Request, token string, services serverServices) {
 	if request.Method != http.MethodPost {
 		response.Header().Set("Allow", http.MethodPost)
 		writeError(response, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -191,6 +214,14 @@ func handleEvidencePreview(response http.ResponseWriter, request *http.Request, 
 		writePreviewError(response, err)
 		return
 	}
+	continuation := continuationDescriptor{Available: false, Reason: "evaluator_unavailable"}
+	if services.questionEvaluator != nil {
+		continuation, err = services.continuations.retain(result)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "internal_error", "internal error")
+			return
+		}
+	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"protocol_version": protocolVersion,
 		"applied_limits": map[string]int{
@@ -198,8 +229,134 @@ func handleEvidencePreview(response http.ResponseWriter, request *http.Request, 
 			"max_declarations":  maxDeclarations,
 			"max_excerpt_bytes": maxExcerptBytes,
 		},
-		"preview": mapEvidenceResult(result),
+		"preview":      mapEvidenceResult(result),
+		"continuation": continuation,
 	})
+}
+
+func handleQuestionSet(response http.ResponseWriter, request *http.Request, token string, services serverServices) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if !authorized(request, token) {
+		response.Header().Set("WWW-Authenticate", "PiLearnLoop")
+		writeError(response, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(response, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(response, request.Body, maxQuestionSetRequestBytes)
+	content, err := io.ReadAll(request.Body)
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+			return
+		}
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	var payload questionSetRequest
+	if err := decodeStrictJSON(content, &payload); err != nil || !hasExactQuestionSetFields(content) {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	selection, ok := validateQuestionSetRequest(payload)
+	if !ok {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	if !validContinuationID(payload.ContinuationID) {
+		writeError(response, http.StatusConflict, "continuation_unavailable", "continuation is unavailable")
+		return
+	}
+	if services.questionEvaluator == nil {
+		writeError(response, http.StatusServiceUnavailable, "evaluator_unavailable", "question evaluator is unavailable")
+		return
+	}
+	retained, ok := services.continuations.consume(payload.ContinuationID)
+	if !ok {
+		writeError(response, http.StatusConflict, "continuation_unavailable", "continuation is unavailable")
+		return
+	}
+
+	bundle, err := evidence.BuildBundle(retained)
+	if err != nil {
+		writeError(response, http.StatusBadGateway, "evaluator_failed", "question evaluation failed")
+		return
+	}
+	input, err := evaluator.NewInput(bundle)
+	if err != nil {
+		writeError(response, http.StatusBadGateway, "evaluator_failed", "question evaluation failed")
+		return
+	}
+	evaluationCtx, cancel := context.WithTimeout(request.Context(), evaluationTimeout)
+	defer cancel()
+	result, err := services.questionEvaluator.Evaluate(evaluationCtx, input, selection)
+	if err != nil {
+		if errors.Is(evaluationCtx.Err(), context.DeadlineExceeded) {
+			writeError(response, http.StatusGatewayTimeout, "evaluator_timeout", "question evaluation timed out")
+			return
+		}
+		if evaluator.ContractErrorCodeOf(err) == evaluator.ContractErrorInvalidOutput {
+			writeError(response, http.StatusBadGateway, "evaluator_invalid_output", "question evaluator returned an invalid result")
+			return
+		}
+		writeError(response, http.StatusBadGateway, "evaluator_failed", "question evaluation failed")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"protocol_version": protocolVersion,
+		"question_set":     result,
+	})
+}
+
+func hasExactQuestionSetFields(content []byte) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(content, &object); err != nil || !hasExactKeys(object, "continuation_id", "pi_version", "model") {
+		return false
+	}
+	var model map[string]json.RawMessage
+	return json.Unmarshal(object["model"], &model) == nil && hasExactKeys(model, "provider", "id", "thinking_level")
+}
+
+func hasExactKeys(values map[string]json.RawMessage, expected ...string) bool {
+	if len(values) != len(expected) {
+		return false
+	}
+	for _, key := range expected {
+		if _, exists := values[key]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func validateQuestionSetRequest(request questionSetRequest) (evaluator.ModelSelection, bool) {
+	if request.Model == nil {
+		return evaluator.ModelSelection{}, false
+	}
+	selection := evaluator.ModelSelection{
+		PiVersion:     request.PiVersion,
+		Provider:      request.Model.Provider,
+		ModelID:       request.Model.ID,
+		ThinkingLevel: request.Model.ThinkingLevel,
+	}
+	return selection, evaluator.ValidateModelSelection(selection) == nil
+}
+
+func validContinuationID(value string) bool {
+	if !strings.HasPrefix(value, "pc1-") || len(value) != len("pc1-")+43 {
+		return false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, "pc1-"))
+	return err == nil && len(decoded) == continuationIdentifierBytes
 }
 
 func decodeStrictJSON(content []byte, destination any) error {

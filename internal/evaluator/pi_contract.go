@@ -24,17 +24,8 @@ type ModelSelection struct {
 // not resolve an executable, spawn a process, inspect credentials, or call a
 // provider.
 func BuildPiArguments(selection ModelSelection, systemPrompt string) ([]string, error) {
-	if selection.PiVersion != SupportedPiVersion {
-		return nil, invalidInput(fmt.Errorf("Pi version must be %s", SupportedPiVersion))
-	}
-	if err := validateArgumentValue("model provider", selection.Provider, 128); err != nil {
-		return nil, invalidInput(err)
-	}
-	if err := validateArgumentValue("model id", selection.ModelID, 256); err != nil {
-		return nil, invalidInput(err)
-	}
-	if !validThinkingLevel(selection.ThinkingLevel) {
-		return nil, invalidInput(errors.New("thinking level is unsupported"))
+	if err := ValidateModelSelection(selection); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(systemPrompt) == "" || !utf8.ValidString(systemPrompt) {
 		return nil, invalidInput(errors.New("system prompt must be non-empty valid UTF-8"))
@@ -58,6 +49,24 @@ func BuildPiArguments(selection ModelSelection, systemPrompt string) ([]string, 
 		"--model", selection.ModelID,
 		"--thinking", selection.ThinkingLevel,
 	}, nil
+}
+
+// ValidateModelSelection applies the same non-secret Pi 0.84.3 model contract
+// used by every evaluator adapter.
+func ValidateModelSelection(selection ModelSelection) error {
+	if selection.PiVersion != SupportedPiVersion {
+		return invalidInput(fmt.Errorf("Pi version must be %s", SupportedPiVersion))
+	}
+	if err := validateArgumentValue("model provider", selection.Provider, 128); err != nil {
+		return invalidInput(err)
+	}
+	if err := validateArgumentValue("model id", selection.ModelID, 256); err != nil {
+		return invalidInput(err)
+	}
+	if !validThinkingLevel(selection.ThinkingLevel) {
+		return invalidInput(errors.New("thinking level is unsupported"))
+	}
+	return nil
 }
 
 func validateArgumentValue(name, value string, maximum int) error {

@@ -2,7 +2,7 @@
 id: post-preview-evaluator-adapter
 status: active
 risk: high
-current_phase: 2
+current_phase: 3
 phase_status: awaiting_approval
 updated: 2026-09-01
 ---
@@ -150,7 +150,7 @@ Accept ADR-0003 before changing product behavior. It records these proposed long
 - credentials remain loaded and used by Pi, never supplied in HTTP JSON, command arguments, prompts, logs, or persisted records;
 - runtime question output is strict JSON validated by Pi LearnLoop and fails closed on any mismatch.
 
-ADR-0003 was accepted and Phase 1 was authorized on 2026-09-01. Phase 1 is complete; Phase 2 remains unauthorized.
+ADR-0003 was accepted and Phases 1-2 were authorized and completed on 2026-09-01. Phase 3 remains separately gated.
 
 ### 8.2 Add a bounded, single-use continuation store
 
@@ -296,6 +296,8 @@ Stop gate: create `docs/checkpoints/post-preview-evaluator-adapter-phase-1.md`, 
 
 ### Phase 2 — Explicit continuation with deterministic adapter
 
+Status: completed and verified on 2026-09-01. No Pi process or provider was invoked.
+
 Goal: implement and verify the preview/confirm/consume state machine end to end without a live model call.
 
 Risk: high.
@@ -401,4 +403,4 @@ The design investigation resolved the eight blocking questions on 2026-09-01:
 7. `Resolved`: disable agent retry and auto-compaction through correlated RPC commands before prompting. Pi LearnLoop performs no product retry. The supported Pi configuration keeps provider retries at the documented default of zero and discloses that Pi/provider transport settings remain external.
 8. `Resolved`: evaluator compatibility is exactly Pi 0.84.3 until adapter contract tests approve another version.
 
-ADR-0003 and `post-preview-evaluator-adapter` Phase 1 were explicitly accepted and authorized on 2026-09-01. Phase 2 remains unauthorized until the Phase 1 checkpoint is complete and the user explicitly approves it.
+ADR-0003 and `post-preview-evaluator-adapter` Phases 1-2 were explicitly accepted, implemented, and verified on 2026-09-01. Phase 3 remains unauthorized until the Phase 2 checkpoint is complete and the user explicitly approves it.

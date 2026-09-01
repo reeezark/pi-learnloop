@@ -6,13 +6,16 @@ import { join } from "node:path";
 import {
   EvidenceClientError,
   type EvidenceClientErrorCode,
-  type EvidencePreviewClient,
+  type EvaluatorSelection,
+  type LearnClient,
   type EvidencePreviewResponse,
   type EvidenceSelection,
+  type QuestionSet,
 } from "./learn-command.ts";
 
 const STATUS_TIMEOUT_MS = 2_000;
 const PREVIEW_TIMEOUT_MS = 35_000;
+const QUESTION_SET_TIMEOUT_MS = 130_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const SERVER_ERROR_CODES = new Set<EvidenceClientErrorCode>([
   "unauthorized",
@@ -25,6 +28,11 @@ const SERVER_ERROR_CODES = new Set<EvidenceClientErrorCode>([
   "analysis_failed",
   "deadline_exceeded",
   "internal_error",
+  "continuation_unavailable",
+  "evaluator_failed",
+  "evaluator_invalid_output",
+  "evaluator_unavailable",
+  "evaluator_timeout",
 ]);
 
 interface RuntimeDescriptor {
@@ -46,7 +54,7 @@ interface HTTPResult {
   body: unknown;
 }
 
-export class DaemonEvidenceClient implements EvidencePreviewClient {
+export class DaemonEvidenceClient implements LearnClient {
   private readonly runtimeDir: string;
 
   constructor(options: ClientOptions = {}) {
@@ -68,27 +76,45 @@ export class DaemonEvidenceClient implements EvidencePreviewClient {
     throw new EvidenceClientError("daemon_unavailable", "daemon discovery failed");
   }
 
+  async questions(continuationID: string, selection: EvaluatorSelection): Promise<QuestionSet> {
+    try {
+      const { port, token } = await this.discover();
+      const result = await requestJSON(
+        port,
+        "POST",
+        "/v1/question-sets",
+        JSON.stringify({
+          continuation_id: continuationID,
+          pi_version: selection.pi_version,
+          model: {
+            provider: selection.provider,
+            id: selection.id,
+            thinking_level: selection.thinking_level,
+          },
+        }),
+        token,
+        QUESTION_SET_TIMEOUT_MS,
+      );
+      if (result.statusCode === 401) {
+        throw new EvidenceClientError("unauthorized", "authentication required");
+      }
+      if (result.statusCode !== 200) {
+        throw parseServerError(result.body);
+      }
+      if (!isQuestionSetResponse(result.body)) {
+        throw new EvidenceClientError("protocol_mismatch", "daemon question-set response is invalid");
+      }
+      return result.body.question_set;
+    } catch (error) {
+      throw normalizeClientError(error);
+    }
+  }
+
   private async previewOnce(
     repository: string,
     selection: EvidenceSelection,
   ): Promise<EvidencePreviewResponse> {
-    await validateProtectedPath(this.runtimeDir, 0o700, "directory");
-    const descriptorPath = join(this.runtimeDir, "daemon.json");
-    await validateProtectedPath(descriptorPath, 0o600, "file");
-    const descriptor = parseDescriptor(await readFile(descriptorPath, "utf8"));
-    const port = descriptorPort(descriptor.base_url);
-
-    const status = await requestJSON(port, "GET", "/v1/status", undefined, undefined, STATUS_TIMEOUT_MS);
-    if (status.statusCode !== 200 || !isMatchingStatus(status.body, descriptor.instance_id)) {
-      throw new EvidenceClientError("daemon_changed", "daemon status does not match the runtime descriptor");
-    }
-
-    const tokenPath = join(this.runtimeDir, "daemon.token");
-    await validateProtectedPath(tokenPath, 0o600, "file");
-    const token = await readFile(tokenPath, "utf8");
-    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
-      throw new EvidenceClientError("invalid_runtime_state", "daemon token is invalid");
-    }
+    const { port, token } = await this.discover();
 
     const result = await requestJSON(
       port,
@@ -108,6 +134,27 @@ export class DaemonEvidenceClient implements EvidencePreviewClient {
       throw new EvidenceClientError("protocol_mismatch", "daemon preview response is invalid");
     }
     return result.body;
+  }
+
+  private async discover(): Promise<{ port: number; token: string }> {
+    await validateProtectedPath(this.runtimeDir, 0o700, "directory");
+    const descriptorPath = join(this.runtimeDir, "daemon.json");
+    await validateProtectedPath(descriptorPath, 0o600, "file");
+    const descriptor = parseDescriptor(await readFile(descriptorPath, "utf8"));
+    const port = descriptorPort(descriptor.base_url);
+
+    const status = await requestJSON(port, "GET", "/v1/status", undefined, undefined, STATUS_TIMEOUT_MS);
+    if (status.statusCode !== 200 || !isMatchingStatus(status.body, descriptor.instance_id)) {
+      throw new EvidenceClientError("daemon_changed", "daemon status does not match the runtime descriptor");
+    }
+
+    const tokenPath = join(this.runtimeDir, "daemon.token");
+    await validateProtectedPath(tokenPath, 0o600, "file");
+    const token = await readFile(tokenPath, "utf8");
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
+      throw new EvidenceClientError("invalid_runtime_state", "daemon token is invalid");
+    }
+    return { port, token };
   }
 }
 
@@ -288,7 +335,8 @@ function isPreviewResponse(value: unknown): value is EvidencePreviewResponse {
     !Array.isArray(value.preview.files) ||
     value.preview.files.length > 20 ||
     !value.preview.files.every(isEvidenceFile) ||
-    !isTruncation(value.preview.truncation)
+    !isTruncation(value.preview.truncation) ||
+    (value.continuation !== undefined && !isContinuation(value.continuation))
   ) {
     return false;
   }
@@ -299,6 +347,55 @@ function isPreviewResponse(value: unknown): value is EvidencePreviewResponse {
     0,
   );
   return declarations.length <= 100 && excerptBytes <= 131_072;
+}
+
+function isContinuation(value: unknown): boolean {
+  if (!isObject(value) || typeof value.available !== "boolean") {
+    return false;
+  }
+  if (value.available) {
+    return (
+      typeof value.id === "string" &&
+      /^pc1-[A-Za-z0-9_-]{43}$/.test(value.id) &&
+      typeof value.expires_at === "string" &&
+      Number.isFinite(Date.parse(value.expires_at))
+    );
+  }
+  return ["insufficient_evidence", "capacity", "evaluator_unavailable"].includes(String(value.reason));
+}
+
+function isQuestionSetResponse(value: unknown): value is { protocol_version: 1; question_set: QuestionSet } {
+  if (!isObject(value) || value.protocol_version !== 1 || !isObject(value.question_set)) {
+    return false;
+  }
+  const questionSet = value.question_set;
+  if (questionSet.schema_version !== 1 || !Array.isArray(questionSet.questions)) {
+    return false;
+  }
+  if (questionSet.disposition === "insufficient_evidence") {
+    return questionSet.questions.length === 0;
+  }
+  if (questionSet.disposition !== "questions" || questionSet.questions.length !== 3) {
+    return false;
+  }
+  const expectedKinds = ["code_specific", "code_specific", "go_backend"];
+  return questionSet.questions.every((question, index) => {
+    if (
+      !isObject(question) ||
+      question.id !== `Q${index + 1}` ||
+      question.kind !== expectedKinds[index] ||
+      typeof question.text !== "string" ||
+      question.text.trim() === "" ||
+      Buffer.byteLength(question.text, "utf8") > 1_000 ||
+      /[\u0000-\u001f\u007f-\u009f]/u.test(question.text) ||
+      !Array.isArray(question.evidence_references) ||
+      !question.evidence_references.every((reference) => typeof reference === "string") ||
+      new Set(question.evidence_references).size !== question.evidence_references.length
+    ) {
+      return false;
+    }
+    return question.kind !== "code_specific" || question.evidence_references.length > 0;
+  });
 }
 
 function isEvidenceFile(value: unknown): value is EvidencePreviewResponse["preview"]["files"][number] {
