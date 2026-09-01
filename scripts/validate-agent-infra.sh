@@ -311,6 +311,7 @@ if [ -d "$repo_root/agent" ]; then
   for required_asset in \
     "$repo_root/agent/README.md" \
     "$repo_root/agent/prompts/README.md" \
+    "$repo_root/agent/prompts/evaluator-question-generation/v1.0.0.md" \
     "$repo_root/agent/evals/README.md" \
     "$repo_root/agent/policies/evaluator-capabilities.json" \
     "$repo_root/agent/schemas/eval-case.schema.json" \
@@ -331,6 +332,45 @@ if [ -d "$repo_root/agent" ]; then
     is_semver "$asset_version" || error "$asset_file has invalid version '$asset_version'"
     [ "$asset_status" = "development-contract" ] || error "$asset_file must have status 'development-contract'"
   done
+
+  prompt_count=0
+  for prompt_file in "$repo_root"/agent/prompts/*/v*.md; do
+    [ -e "$prompt_file" ] || continue
+    prompt_count=$((prompt_count + 1))
+
+    prompt_id=$(frontmatter_value "$prompt_file" id)
+    prompt_version=$(frontmatter_value "$prompt_file" version)
+    prompt_status=$(frontmatter_value "$prompt_file" status)
+    prompt_input_schema=$(frontmatter_value "$prompt_file" input_schema)
+    prompt_output_schema=$(frontmatter_value "$prompt_file" output_schema)
+    prompt_policy=$(frontmatter_value "$prompt_file" capability_policy)
+    prompt_updated=$(frontmatter_value "$prompt_file" updated)
+    prompt_directory=$(basename "$(dirname "$prompt_file")")
+    prompt_filename=$(basename "$prompt_file")
+
+    [ -n "$prompt_id" ] || error "$prompt_file is missing frontmatter field 'id'"
+    [ "$prompt_id" = "$prompt_directory" ] || error "$prompt_file id must match its parent directory"
+    is_semver "$prompt_version" || error "$prompt_file has invalid version '$prompt_version'"
+    [ "$prompt_filename" = "v$prompt_version.md" ] || error "$prompt_file name must match version '$prompt_version'"
+    case "$prompt_status" in
+      draft|released|deprecated) ;;
+      *) error "$prompt_file has invalid status '$prompt_status'" ;;
+    esac
+    [ -n "$prompt_input_schema" ] && [ "$prompt_input_schema" != "TODO" ] || error "$prompt_file must identify input_schema"
+    [ -n "$prompt_output_schema" ] && [ "$prompt_output_schema" != "TODO" ] || error "$prompt_file must identify output_schema"
+    [ "$prompt_policy" = "evaluator-capabilities@1.0.0" ] || error "$prompt_file must use evaluator-capabilities@1.0.0"
+    is_date "$prompt_updated" || error "$prompt_file has invalid updated date '$prompt_updated'"
+    grep -qi 'untrusted' "$prompt_file" || error "$prompt_file must treat evidence as untrusted"
+    grep -q 'evidence_references' "$prompt_file" || error "$prompt_file must require evidence references"
+    grep -q 'insufficient_evidence' "$prompt_file" || error "$prompt_file must define the insufficient-evidence result"
+
+    if [ "$prompt_id" = "evaluator-question-generation" ] && [ "$prompt_version" = "1.0.0" ]; then
+      [ "$prompt_status" = "released" ] || error "$prompt_file must be released"
+      [ "$prompt_input_schema" = "evaluator-input@1" ] || error "$prompt_file must use evaluator-input@1"
+      [ "$prompt_output_schema" = "evaluator-question-set@1" ] || error "$prompt_file must use evaluator-question-set@1"
+    fi
+  done
+  [ "$prompt_count" -gt 0 ] || error "agent/prompts must contain at least one versioned prompt"
 
   for json_file in \
     "$repo_root"/agent/policies/*.json \

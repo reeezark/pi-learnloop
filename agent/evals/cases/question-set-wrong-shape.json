@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "question-set-wrong-shape",
+  "case_version": "1.0.0",
+  "category": "structured_result",
+  "description": "Reject a question result that does not contain the fixed Q1, Q2, and Q3 shape.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "E001",
+        "kind": "code",
+        "synthetic": true,
+        "content": "func Validate(value string) error { if value == \"\" { return ErrEmpty }; return nil }"
+      }
+    ],
+    "candidate_output": {
+      "schema_version": 1,
+      "disposition": "questions",
+      "questions": [
+        {
+          "id": "Q1",
+          "kind": "code_specific",
+          "text": "Why is empty input rejected?",
+          "evidence_references": [
+            "E001"
+          ]
+        },
+        {
+          "id": "Q2",
+          "kind": "go_backend",
+          "text": "How would you test the error path?",
+          "evidence_references": []
+        }
+      ]
+    }
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": [
+      "question_count_invalid",
+      "question_kind_order_invalid"
+    ],
+    "required_evidence_refs": [
+      "E001"
+    ],
+    "forbidden_claims": []
+  },
+  "tags": [
+    "question-shape",
+    "schema-validation"
+  ]
+}

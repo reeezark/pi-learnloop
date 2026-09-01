@@ -1,6 +1,6 @@
 ---
 id: ADR-0003
-status: proposed
+status: accepted
 date: 2026-09-01
 supersedes: none
 ---
@@ -54,7 +54,7 @@ As in ADR-0002, this design does not claim protection from root, same-user malwa
 
 ## Decision
 
-This ADR is proposed, not accepted. It does not authorize implementation or a model call.
+This ADR was accepted on 2026-09-01. Acceptance fixes the long-lived boundary below; implementation still requires separate phase authorization and does not itself authorize a model call.
 
 ### 1. Separate preview from continuation
 
@@ -75,7 +75,17 @@ Continuation entries are:
 - removed on expiry and daemon shutdown;
 - never serialized, logged, uploaded as telemetry, or recovered after restart.
 
-`TODO / Need Confirmation`: Phase 1 must fix the TTL, entry count, aggregate byte cap, and overload behavior before this ADR can be accepted.
+The initial fixed limits are:
+
+```text
+continuation lifetime:              5 minutes
+maximum live continuations:         8
+maximum retained excerpt bytes:     1 MiB aggregate
+identifier entropy:                 32 random bytes
+identifier representation:          pc1- + unpadded base64url
+```
+
+Expired entries are removed before every insert and consume. The store never evicts an unexpired entry: when either live limit is reached, the preview still succeeds but its continuation descriptor reports `available: false` with reason `capacity`. This preserves the useful preview without silently invalidating a preview another user action is about to consume. A preview with no usable excerpt reports reason `insufficient_evidence` and retains nothing.
 
 ### 3. Add one protected continuation capability
 
@@ -83,7 +93,50 @@ The continuation request carries only the opaque ID plus validated non-secret mo
 
 Unknown, expired, already consumed, malformed, wrong-instance, and concurrently consumed IDs fail with safe stable errors. The product does not automatically retry a continuation. A user who wants another attempt starts a new `/learn` flow and reviews a new preview.
 
-`TODO / Need Confirmation`: Phase 1 must fix the endpoint path, v1/v2 compatibility choice, JSON fields, bounds, deadlines, and error codes before acceptance.
+ADR-0003 adds `POST /v1/question-sets`. Adding a new authenticated route and optional preview response field is additive for existing v1 clients: it changes neither the strict request nor the meaning of any existing field. ADR-0003 extends ADR-0002's Phase 2 route list without superseding its transport, authentication, or existing endpoint contracts. Any incompatible change to this route requires `/v2`.
+
+A preview response gains this optional object:
+
+```json
+{
+  "continuation": {
+    "available": true,
+    "id": "pc1-<43 base64url characters>",
+    "expires_at": "2026-09-01T12:05:00Z"
+  }
+}
+```
+
+When evaluation cannot be offered, the same field is present without an ID:
+
+```json
+{
+  "continuation": {
+    "available": false,
+    "reason": "insufficient_evidence"
+  }
+}
+```
+
+The allowed unavailable reasons are `insufficient_evidence`, `capacity`, and `evaluator_unavailable`. Existing clients may ignore the whole optional field.
+
+The continuation request is limited to 4 KiB and is strict JSON:
+
+```json
+{
+  "continuation_id": "pc1-<43 base64url characters>",
+  "pi_version": "0.84.3",
+  "model": {
+    "provider": "<active Pi model provider>",
+    "id": "<active Pi model id>",
+    "thinking_level": "off"
+  }
+}
+```
+
+`provider` and `id` must be non-empty UTF-8 strings without control characters, must not begin with `-`, and are limited to 128 and 256 bytes respectively. `thinking_level` is one of Pi 0.84.3's declared values. The extension sends `VERSION`, `ctx.model.provider`, `ctx.model.id`, and `ctx.thinkingLevel`; if any value is unavailable or unsupported, it does not send the continuation request.
+
+Unknown, expired, consumed, wrong-instance, and concurrently consumed IDs deliberately share `409 continuation_unavailable`. Stable evaluator failures are `502 evaluator_failed`, `502 evaluator_invalid_output`, `503 evaluator_unavailable`, and `504 evaluator_timeout`. Existing ADR-0002 errors remain unchanged. Error messages contain no source, raw RPC output, credentials, executable paths, or model-provider response bodies.
 
 ### 4. Build the bundle only after atomic consume
 
@@ -113,7 +166,17 @@ The adapter starts the process directly without a shell. It provides the release
 
 The adapter must not pass API keys, Instance Tokens, repository paths, source excerpts, or Session identifiers in argv. Pi resolves and uses its own credentials for provider transport. The Go daemon must neither read nor persist Pi auth files.
 
-`TODO / Need Confirmation`: Phase 1 must prove how the daemon launches the same supported Pi installation across npm CLI and compiled-binary layouts. A bare `pi` PATH assumption is not accepted by this proposal.
+The first supported deployment requires a `pi` executable on the daemon's startup `PATH`. At daemon startup, the evaluator preflight:
+
+1. resolves `pi` with the operating system's executable lookup;
+2. converts it to an absolute path and resolves symlinks once;
+3. runs that frozen path with `--version` under a two-second deadline;
+4. requires stdout to equal `0.84.3` after trimming whitespace;
+5. records only availability and the version, never the workstation path, in product responses or logs.
+
+This contract covers the locally verified Homebrew/global-npm symlink and a compiled executable when either is named `pi` and present on `PATH`. Arbitrary executable paths are not accepted over HTTP, because that would turn the authenticated endpoint into a client-selected process launcher. Missing, non-executable, timed-out, or mismatched Pi leaves evidence preview available but marks continuation as `evaluator_unavailable`.
+
+The extension imports Pi's exported `VERSION` constant and requires it to equal `0.84.3` before offering continuation. The initial supported range is therefore exactly Pi `0.84.3`; the peer dependency wildcard is packaging compatibility, not an evaluator compatibility claim. Broadening the supported range requires adapter contract tests and a compatibility review, but not a protocol major when the wire schema is unchanged.
 
 ### 6. Deny all evaluator capabilities except Pi-managed model transport
 
@@ -135,7 +198,38 @@ The successful result contains exactly:
 - evidence references required for code-specific questions;
 - no answer, score, assessment label, follow-up, or persistence fields.
 
-The alternate disposition is `insufficient_evidence` and contains no invented questions.
+The runtime question-set shape is:
+
+```json
+{
+  "schema_version": 1,
+  "disposition": "questions",
+  "questions": [
+    {
+      "id": "Q1",
+      "kind": "code_specific",
+      "text": "<question>",
+      "evidence_references": ["E001"]
+    },
+    {
+      "id": "Q2",
+      "kind": "code_specific",
+      "text": "<question>",
+      "evidence_references": ["E002"]
+    },
+    {
+      "id": "Q3",
+      "kind": "go_backend",
+      "text": "<question>",
+      "evidence_references": []
+    }
+  ]
+}
+```
+
+Question IDs and ordering are fixed. Text is non-empty, valid UTF-8, contains no control characters, and is limited to 1,000 bytes per question. Every reference must exist in the supplied bundle; code-specific questions require at least one reference. The Go/backend question may cite evidence but does not require it. No topic, hint, answer, rubric, score, or free-form rationale is included in this slice.
+
+The alternate result is exactly `{"schema_version":1,"disposition":"insufficient_evidence","questions":[]}` and contains no invented questions or free-form reason.
 
 The production prompt is a versioned immutable asset. It delimits evidence as untrusted data, forbids following evidence instructions, requires evidence references, requires strict JSON with no surrounding prose, and requires abstention when the bundle cannot support the question contract.
 
@@ -145,7 +239,20 @@ The adapter uses LF-only JSONL framing, bounded stdout/stderr buffers, a fixed d
 
 Pi LearnLoop validates the complete runtime schema and evidence references before returning questions. It does not make an automatic repair or retry model call. Invalid, missing, tool-using, timed-out, oversized, or otherwise unexpected output returns a safe user-facing failure and no questions.
 
-`TODO / Need Confirmation`: Phase 1 must fix the evaluator deadline and output caps and determine how Pi retry/compaction settings affect provider call count and the user's cost expectation.
+The initial fixed execution limits are:
+
+```text
+Pi version preflight:                2 seconds
+evaluator process deadline:          120 seconds
+HTTP continuation client deadline:   130 seconds
+RPC stdout cap:                       2 MiB
+RPC stderr cap:                       64 KiB
+final assistant text cap:             64 KiB
+```
+
+Before sending the prompt, the adapter sends `set_auto_retry` with `enabled: false` and `set_auto_compaction` with `enabled: false`, waits for both correlated success responses, and verifies `get_commands` returns an empty command list. Any failure stops before the prompt. It rejects every tool execution event even though `--no-tools` is set.
+
+Pi 0.84.3's documented provider-level retry default is zero, but RPC does not expose that setting. The supported configuration therefore requires `retry.provider.maxRetries` to remain `0`; changing it is outside Pi LearnLoop's enforceable boundary and may cause Pi-managed transport retries. Pi LearnLoop never retries the continuation, RPC prompt, invalid result, or failed evaluator process itself. The confirmation copy states that one evaluation is requested and Pi/provider transport may retry transient network failures according to Pi's configuration.
 
 ### 9. No persistence in this slice
 
@@ -201,4 +308,4 @@ Rejected as broader than the smallest manual product slice. Failure after atomic
 - Strict text-to-JSON validation can reject otherwise useful model prose; failure is preferred to accepting ambiguous or ungrounded output.
 - Foreground daemon exit loses continuations and active evaluation state. This is an explicit limitation until durable jobs are separately designed.
 - Supporting multiple Pi packaging layouts and versions requires a proved invocation contract; it cannot be inferred from the current peer dependency wildcard.
-- Accepting this ADR still does not authorize code changes, dependency changes, model calls, answer collection, scoring, persistence, or any implementation phase.
+- Accepting this ADR does not authorize dependency changes, model calls, answer collection, scoring, persistence, or any implementation phase beyond the separately approved plan phase.

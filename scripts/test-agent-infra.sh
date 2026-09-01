@@ -156,6 +156,7 @@ expect_fail "invalid JSON is rejected" "$invalid_json_root"
 
 missing_category_root=$(new_fixture missing-eval-category)
 rm -f "$missing_category_root/agent/evals/cases/prompt-injection-in-evidence.json"
+rm -f "$missing_category_root/agent/evals/cases/question-generation-injection.json"
 expect_fail "all eval categories are required" "$missing_category_root"
 
 invalid_case_version_root=$(new_fixture invalid-case-version)
@@ -172,5 +173,19 @@ stale_policy_hash_root=$(new_fixture stale-policy-hash)
 sed -i.bak 's/3d139c932c9296abe1f970f447e692556930476396243ccb021b34792138ab0b/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/' "$stale_policy_hash_root/agent/fixtures/run-record/example-fixture-run.json"
 rm -f "$stale_policy_hash_root/agent/fixtures/run-record/example-fixture-run.json.bak"
 expect_fail "run record policy hash must match" "$stale_policy_hash_root"
+
+missing_prompt_root=$(new_fixture missing-prompt)
+rm -f "$missing_prompt_root/agent/prompts/evaluator-question-generation/v1.0.0.md"
+expect_fail "released evaluator prompt is required" "$missing_prompt_root"
+
+invalid_prompt_version_root=$(new_fixture invalid-prompt-version)
+sed -i.bak 's/^version: 1.0.0$/version: latest/' "$invalid_prompt_version_root/agent/prompts/evaluator-question-generation/v1.0.0.md"
+rm -f "$invalid_prompt_version_root/agent/prompts/evaluator-question-generation/v1.0.0.md.bak"
+expect_fail "prompt version must match its immutable path" "$invalid_prompt_version_root"
+
+permissive_prompt_root=$(new_fixture permissive-prompt)
+sed -i.bak 's/^capability_policy: evaluator-capabilities@1.0.0$/capability_policy: evaluator-capabilities@2.0.0/' "$permissive_prompt_root/agent/prompts/evaluator-question-generation/v1.0.0.md"
+rm -f "$permissive_prompt_root/agent/prompts/evaluator-question-generation/v1.0.0.md.bak"
+expect_fail "prompt must use the approved capability policy" "$permissive_prompt_root"
 
 echo "Agent infrastructure validator tests passed."

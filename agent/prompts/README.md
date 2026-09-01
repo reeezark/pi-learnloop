@@ -6,7 +6,7 @@ status: development-contract
 
 # Prompt Versioning
 
-No production evaluator prompt exists yet. This guide defines how prompt artifacts must be introduced when an approved evaluator implementation plan provides their content and runtime schemas.
+Production evaluator prompts are immutable versioned assets. This guide defines their layout and lifecycle.
 
 ## Layout
 
@@ -18,17 +18,23 @@ A prompt file must begin with:
 
 ```yaml
 ---
-id: evaluator-question-and-assessment
+id: evaluator-question-generation
 version: 1.0.0
 status: draft
-input_schema: TODO
-output_schema: TODO
+input_schema: evaluator-input@1
+output_schema: evaluator-question-set@1
 capability_policy: evaluator-capabilities@1.0.0
 updated: YYYY-MM-DD
 ---
 ```
 
 Allowed prompt states are `draft | released | deprecated`.
+
+## Current Released Prompt
+
+| Prompt | Version | Input | Output |
+| --- | --- | --- | --- |
+| `evaluator-question-generation` | `1.0.0` | `evaluator-input@1` | `evaluator-question-set@1` |
 
 ## Version Rules
 
@@ -45,6 +51,6 @@ Allowed prompt states are `draft | released | deprecated`.
 - Never place credentials, repository source, user answers, or Session transcripts in prompt files.
 - Require evidence references for code-specific claims.
 - Require an explicit insufficient-evidence path.
-- Do not select a model, score threshold, or runtime schema in this guide.
+- Do not select a model or score threshold in this guide.
 
 The capability policy is independent of prompt wording. A prompt cannot grant a denied capability.

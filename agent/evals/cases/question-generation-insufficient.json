@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "question-generation-insufficient",
+  "case_version": "1.0.0",
+  "category": "insufficient_evidence",
+  "description": "Require the empty insufficient-evidence result when metadata cannot support three grounded questions.",
+  "stimulus": {
+    "evidence": [
+      {
+        "ref": "E001",
+        "kind": "metadata",
+        "synthetic": true,
+        "content": "declaration omitted by evidence budget"
+      }
+    ],
+    "candidate_output": {
+      "schema_version": 1,
+      "disposition": "questions",
+      "questions": [
+        {
+          "id": "Q1",
+          "kind": "code_specific",
+          "text": "Which database transaction is used?",
+          "evidence_references": [
+            "E001"
+          ]
+        },
+        {
+          "id": "Q2",
+          "kind": "code_specific",
+          "text": "How many retries occur?",
+          "evidence_references": [
+            "E001"
+          ]
+        },
+        {
+          "id": "Q3",
+          "kind": "go_backend",
+          "text": "Which isolation level is configured?",
+          "evidence_references": []
+        }
+      ]
+    }
+  },
+  "expectations": {
+    "decision": "abstain",
+    "required_signals": [
+      "insufficient_evidence",
+      "invented_question_rejected"
+    ],
+    "required_evidence_refs": [
+      "E001"
+    ],
+    "forbidden_claims": [
+      "A database transaction is visible",
+      "Retry behavior is visible"
+    ]
+  },
+  "tags": [
+    "abstention",
+    "question-generation"
+  ]
+}

@@ -1,9 +1,9 @@
 ---
 id: post-preview-evaluator-adapter
-status: draft
+status: active
 risk: high
-current_phase: 1
-phase_status: planned
+current_phase: 2
+phase_status: awaiting_approval
 updated: 2026-09-01
 ---
 
@@ -28,7 +28,7 @@ The next step crosses several compatibility and security boundaries at once:
 - the evaluator must be isolated from the development Session and have no tools;
 - a new local daemon route will be able to trigger a potentially paid external model call.
 
-These are high-risk changes under `AGENTS.md`. This plan therefore remains a draft until the proposed architecture decision is accepted and Phase 1 is explicitly authorized.
+These are high-risk changes under `AGENTS.md`. ADR-0003 and Phase 1 were explicitly accepted and authorized on 2026-09-01; later phases remain behind separate stop gates.
 
 ## 3. Current Behavior
 
@@ -45,7 +45,7 @@ Verified on 2026-09-01 from the repository, CodeGraph, and the locally installed
 - Pi 0.84.3 supports both in-process SDK sessions and JSONL RPC subprocesses. RPC supports `--no-session`, `--no-tools`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, `--no-context-files`, and `--no-approve`.
 - Pi RPC emits `agent_settled` after retries, compaction retries, and queued continuations have stopped. It does not provide a repository-defined structured-output schema for this product; Pi LearnLoop must validate the assistant text itself.
 
-No database, durable job, SSE stream, production prompt, runtime evaluator schema, evaluator adapter, answer workflow, follow-up, scoring, or assessment label currently exists.
+At investigation time, no database, durable job, SSE stream, production prompt, runtime evaluator schema, evaluator adapter, answer workflow, follow-up, scoring, or assessment label existed. Phase 1 now provides the runtime types, strict validator, fixed Pi argument mapping, and released prompt only; the product still has no evaluator adapter or caller.
 
 ## 4. Relevant Call Chain
 
@@ -150,7 +150,7 @@ Accept ADR-0003 before changing product behavior. It records these proposed long
 - credentials remain loaded and used by Pi, never supplied in HTTP JSON, command arguments, prompts, logs, or persisted records;
 - runtime question output is strict JSON validated by Pi LearnLoop and fails closed on any mismatch.
 
-ADR acceptance does not authorize implementation.
+ADR-0003 was accepted and Phase 1 was authorized on 2026-09-01. Phase 1 is complete; Phase 2 remains unauthorized.
 
 ### 8.2 Add a bounded, single-use continuation store
 
@@ -166,7 +166,7 @@ The implementation contract must include fixed, non-configurable initial limits:
 - deterministic eviction or rejection behavior;
 - no disk serialization, logs, metrics upload, or recovery after restart.
 
-Exact TTL, entry count, byte cap, and overload response are `TODO / Need Confirmation` in the proposed ADR and must be fixed before Phase 2 authorization.
+ADR-0003 fixes a five-minute lifetime, eight live entries, a 1 MiB aggregate excerpt cap, and 32-byte random `pc1-` identifiers. Expired entries are removed before insert/consume. Live entries are never evicted; a capacity-limited preview succeeds but reports that continuation is unavailable.
 
 ### 8.3 Add a post-preview continuation route
 
@@ -174,7 +174,7 @@ The preview response may gain an optional continuation object under the v1 addit
 
 The server must reject unknown, expired, already consumed, wrong-instance, malformed, or concurrently consumed IDs with safe stable errors. It must consume before starting an external call so retries cannot create duplicate paid evaluations. A failed evaluator run does not silently recreate or reuse the grant; the user explicitly reruns `/learn`.
 
-The exact endpoint name, request/response schema, size limit, deadlines, and error codes are compatibility-sensitive and must be frozen in accepted ADR-0003 before implementation.
+ADR-0003 selects strict `POST /v1/question-sets` with a 4 KiB body. The request carries the continuation ID, exact Pi version, and active non-secret provider/model/thinking identity. Existing v1 clients remain compatible because the preview addition and new route are additive. The accepted ADR must preserve the fixed safe error vocabulary and 120/130-second server/client deadline relationship.
 
 ### 8.4 Introduce runtime contracts distinct from development fixtures
 
@@ -230,7 +230,7 @@ The production adapter starts Pi RPC directly without a shell and uses a fixed a
 
 The adapter sends the input envelope in one RPC `prompt` command over stdin, uses LF-only JSONL framing, waits for `agent_settled`, caps stdout/stderr and runtime, rejects tool events and unexpected message shapes, extracts one final assistant text value, and validates strict JSON. It always terminates and reaps the child.
 
-The exact Pi invocation resolution across Node and compiled Pi installations remains `TODO / Need Confirmation`. Do not implement a PATH-only assumption until Phase 1 resolves it with a packaged integration test or an explicit supported deployment constraint.
+The initial supported deployment resolves `pi` from the daemon startup `PATH`, freezes its absolute symlink-resolved path, and requires `pi --version` to return exactly `0.84.3` within two seconds. The HTTP client cannot supply an executable path. This covers PATH-visible npm/Homebrew and compiled installations and deliberately excludes installations that do not expose `pi` to the daemon.
 
 ### 8.7 Keep the extension thin and the action explicit
 
@@ -247,7 +247,7 @@ On confirm, the extension sends only the continuation ID and validated non-secre
 - Requests remain strict. Adding required fields or changing field meaning requires the versioning rule selected in ADR-0003.
 - The internal Go `Bundle` remains a domain value. JSON mapping belongs at the evaluator boundary and must not add JSON tags that accidentally publish the internal type.
 - Development fixture and run-record schemas remain development-only and unchanged unless their own versioned contract requires an update.
-- Pi 0.84.3 is the only locally verified evaluator interface. Supporting other Pi versions is `TODO / Need Confirmation`; do not claim a compatibility range from the peer dependency wildcard alone.
+- Pi 0.84.3 is the only supported evaluator interface in this plan. The extension uses Pi's exported `VERSION`; the daemon independently preflights the PATH executable. The peer dependency wildcard does not broaden evaluator compatibility.
 - No durable data migration exists in this plan.
 
 ## 10. Risks
@@ -268,6 +268,8 @@ On confirm, the extension sends only the continuation ID and validated non-secre
 ## 11. Implementation Phases
 
 ### Phase 1 — Runtime contract and isolation proof
+
+Status: completed and verified on 2026-09-01. No Pi process or provider was invoked.
 
 Goal: accept the architecture boundary and add no live model behavior yet.
 
@@ -388,15 +390,15 @@ Phase 3 must add a fake executable/RPC harness covering LF framing, response cor
 
 ## 14. Open Questions
 
-The following block implementation and must be resolved in proposed ADR-0003 or Phase 1 evidence before any business-code authorization:
+The design investigation resolved the eight blocking questions on 2026-09-01:
 
-1. `TODO / Need Confirmation`: exact continuation endpoint name and v1 schema, including whether a new route remains v1-additive under ADR-0002 or requires `/v2`.
-2. `TODO / Need Confirmation`: fixed continuation TTL, maximum entry count, aggregate excerpt-byte cap, eviction/rejection semantics, and stable overload/expiry errors.
-3. `TODO / Need Confirmation`: the supported way to launch the same Pi 0.84.3 installation from the Go daemon across npm CLI and compiled-binary layouts. The locally installed Pi example resolves this inside Node, not from an unrelated Go process.
-4. `TODO / Need Confirmation`: exact mapping of `ExtensionCommandContext.model` and `thinkingLevel` to RPC `--provider`, `--model`, and `--thinking`, including behavior when no model is selected.
-5. `TODO / Need Confirmation`: whether the initial runtime contract should produce only the three question prompts or include additional display metadata. It must not include answer/scoring fields under this plan.
-6. `TODO / Need Confirmation`: exact evaluator and request deadlines and stdout/stderr caps, chosen against the existing 35-second preview client timeout without conflating the two operations.
-7. `TODO / Need Confirmation`: whether Pi's default retry/compaction settings can cause more than one provider request and how the adapter makes potential cost explicit. Product-level retries remain forbidden.
-8. `TODO / Need Confirmation`: the initially supported Pi version range. Only 0.84.3 has been inspected; the current peer dependency wildcard is not evidence of runtime compatibility.
+1. `Resolved`: add strict `POST /v1/question-sets`; the route and optional preview continuation object are additive v1 capabilities. Incompatible changes require `/v2`.
+2. `Resolved`: five-minute TTL, eight live entries, 1 MiB aggregate retained excerpts, no live eviction, and indistinguishable `409 continuation_unavailable` consume failures.
+3. `Resolved`: freeze a symlink-resolved `pi` from daemon startup `PATH`; require an exact two-second `--version` preflight; never accept an executable path from HTTP.
+4. `Resolved`: map exported Pi `VERSION`, `ctx.model.provider`, `ctx.model.id`, and `ctx.thinkingLevel` directly to validated request fields and RPC arguments. Missing values disable continuation.
+5. `Resolved`: the first runtime result contains only fixed IDs, kinds, question text, and evidence references for exactly three questions, or an empty `insufficient_evidence` result.
+6. `Resolved`: 120-second evaluator, 130-second client, 2 MiB stdout, 64 KiB stderr, and 64 KiB final assistant text limits.
+7. `Resolved`: disable agent retry and auto-compaction through correlated RPC commands before prompting. Pi LearnLoop performs no product retry. The supported Pi configuration keeps provider retries at the documented default of zero and discloses that Pi/provider transport settings remain external.
+8. `Resolved`: evaluator compatibility is exactly Pi 0.84.3 until adapter contract tests approve another version.
 
-No implementation phase is authorized by this draft. The next user decision is whether to accept ADR-0003 after the open questions are resolved, then explicitly authorize Phase 1.
+ADR-0003 and `post-preview-evaluator-adapter` Phase 1 were explicitly accepted and authorized on 2026-09-01. Phase 2 remains unauthorized until the Phase 1 checkpoint is complete and the user explicitly approves it.
