@@ -111,6 +111,7 @@ func Run(ctx context.Context, config Config) error {
 			continuations:     continuations,
 			questionEvaluator: questionEvaluator,
 			assessments:       assessments,
+			history:           historyStore,
 		}),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,

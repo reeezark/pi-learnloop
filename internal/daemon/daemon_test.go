@@ -105,6 +105,33 @@ func TestRunContinuesWhenHistoryStorageIsUnavailable(t *testing.T) {
 		content, _ := io.ReadAll(response.Body)
 		t.Fatalf("question status = %d, want %d; body = %s", response.StatusCode, http.StatusOK, content)
 	}
+
+	historyBody, err := json.Marshal(map[string]any{"repository": repository, "limit": 20})
+	if err != nil {
+		t.Fatalf("Marshal(history query): %v", err)
+	}
+	historyRequest, err := http.NewRequest(http.MethodPost, running.descriptor.BaseURL+"/v1/learning-history-queries", bytes.NewReader(historyBody))
+	if err != nil {
+		t.Fatalf("NewRequest(history query): %v", err)
+	}
+	historyRequest.Header.Set("Content-Type", "application/json")
+	historyRequest.Header.Set("Authorization", "PiLearnLoop "+token)
+	historyResponse, err := localHTTPClient().Do(historyRequest)
+	if err != nil {
+		t.Fatalf("history query: %v", err)
+	}
+	defer historyResponse.Body.Close()
+	var historyError struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(historyResponse.Body).Decode(&historyError); err != nil {
+		t.Fatalf("decode history error: %v", err)
+	}
+	if historyResponse.StatusCode != http.StatusServiceUnavailable || historyError.Error.Code != "history_unavailable" {
+		t.Fatalf("history response = (%d, %#v), want history_unavailable", historyResponse.StatusCode, historyError)
+	}
 }
 
 func TestRunRecoversRunningHistoryWithoutEvaluatorCall(t *testing.T) {

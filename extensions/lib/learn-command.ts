@@ -117,6 +117,49 @@ export type HistorySave =
   | { saved: true; record_id: string }
   | { saved: false; reason: "storage_unavailable" };
 
+export interface LearningHistoryPrompt {
+  id: string;
+  version: string;
+  sha256: string;
+}
+
+export interface LearningHistoryOutcome {
+  question_id: "Q1" | "Q2" | "Q3";
+  question_kind: "code_specific" | "go_backend";
+  verdict: "demonstrated" | "partial" | "not_demonstrated";
+}
+
+export interface LearningHistoryRecord {
+  record_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "complete" | "failed" | "interrupted";
+  failure_code: "evaluator_failed" | "evaluator_invalid_output" | "evaluator_timeout" | null;
+  base_revision: string;
+  head_revision: string;
+  evidence_manifest_sha256: string;
+  question_schema_version: number;
+  assessment_schema_version: number;
+  question_prompt: LearningHistoryPrompt;
+  assessment_prompt: LearningHistoryPrompt;
+  pi_version: string;
+  provider: string;
+  model_id: string;
+  thinking_level: string;
+  follow_up_used: boolean;
+  label: "understood" | "partial" | "review_needed" | null;
+  outcomes: LearningHistoryOutcome[];
+}
+
+export interface LearningHistoryResponse {
+  protocol_version: 1;
+  records: LearningHistoryRecord[];
+}
+
+export interface LearningHistoryClient {
+  history(repository: string, limit: number): Promise<LearningHistoryResponse>;
+}
+
 export type AssessmentResult =
   | {
       turn: {
@@ -175,7 +218,8 @@ export type EvidenceClientErrorCode =
   | "evaluator_failed"
   | "evaluator_invalid_output"
   | "evaluator_unavailable"
-  | "evaluator_timeout";
+  | "evaluator_timeout"
+  | "history_unavailable";
 
 export interface LearnCommandContext {
   cwd: string;
@@ -196,6 +240,56 @@ export interface LearnCommandContext {
 
 const COMMIT_RANGE = "Commit range";
 const WORKING_TREE = "Working tree against a base revision";
+const DEFAULT_HISTORY_LIMIT = 20;
+
+export function createLearnHistoryCommand(client: LearningHistoryClient) {
+  return async function learnHistoryCommand(args: string, context: LearnCommandContext): Promise<void> {
+    if (args.trim() !== "") {
+      context.ui.notify("/learn-history does not accept arguments. Run it from the repository you want to inspect.", "warning");
+      return;
+    }
+    if (!context.hasUI) {
+      context.ui.notify("/learn-history requires Pi's interactive UI.", "error");
+      return;
+    }
+    if (!context.isProjectTrusted()) {
+      context.ui.notify("Trust this project in Pi before using /learn-history.", "error");
+      return;
+    }
+
+    try {
+      const response = await client.history(context.cwd, DEFAULT_HISTORY_LIMIT);
+      context.ui.notify(formatLearningHistory(response), "info");
+    } catch (error) {
+      if (error instanceof EvidenceClientError && error.code === "daemon_unavailable") {
+        context.ui.notify(
+          "Pi LearnLoop daemon is unavailable. Start it with `pi-learnloop daemon`, then run /learn-history again.",
+          "error",
+        );
+        return;
+      }
+      if (error instanceof EvidenceClientError && error.code === "unauthorized") {
+        context.ui.notify(
+          "Pi LearnLoop could not authenticate with the daemon. Restart `pi-learnloop daemon`, then run /learn-history again.",
+          "error",
+        );
+        return;
+      }
+      if (error instanceof EvidenceClientError && error.code === "invalid_repository") {
+        context.ui.notify("The current directory is not inside a supported Git repository.", "error");
+        return;
+      }
+      if (error instanceof EvidenceClientError && error.code === "history_unavailable") {
+        context.ui.notify(
+          "Local learning history is unavailable. Pi LearnLoop left the database unchanged; check the daemon and data-directory compatibility before trying again.",
+          "warning",
+        );
+        return;
+      }
+      context.ui.notify("Pi LearnLoop could not load local learning history. Run /learn-history again.", "error");
+    }
+  };
+}
 
 export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
   return async function learnCommand(args: string, context: LearnCommandContext): Promise<void> {
@@ -448,6 +542,38 @@ export function formatAssessmentResult(result: Extract<AssessmentResult, { label
       return `${evaluation.question_id} — ${evaluation.verdict}: ${evaluation.feedback}${references}`;
     }),
   ].join("\n");
+}
+
+export function formatLearningHistory(response: LearningHistoryResponse): string {
+  if (response.records.length === 0) {
+    return "No learning history is available for this repository.";
+  }
+  return [
+    `Learning history (${response.records.length} most recent)`,
+    ...response.records.flatMap((record, index) => {
+      const terminal = record.label ?? record.failure_code;
+      const outcomes = record.outcomes.length === 0
+        ? "No completed question outcomes"
+        : record.outcomes.map((outcome) => `${outcome.question_id} ${outcome.question_kind} ${outcome.verdict}`).join(" · ");
+      return [
+        `${index + 1}. ${record.started_at} — ${record.status}${terminal === null ? "" : ` · ${terminal}`}`,
+        `   Finished: ${record.finished_at ?? "not finished"} · Follow-up: ${record.follow_up_used ? "yes" : "no"}`,
+        `   Revisions: ${shortRevision(record.base_revision)}..${shortRevision(record.head_revision)} · Evidence: ${shortHash(record.evidence_manifest_sha256)}`,
+        `   ${outcomes}`,
+        `   Evaluator: ${record.provider}/${record.model_id} · thinking=${record.thinking_level} · Pi ${record.pi_version} · Schemas Q${record.question_schema_version}/A${record.assessment_schema_version}`,
+        `   Prompts: ${record.question_prompt.id}@${record.question_prompt.version}#${shortHash(record.question_prompt.sha256)} · ${record.assessment_prompt.id}@${record.assessment_prompt.version}#${shortHash(record.assessment_prompt.sha256)}`,
+        `   Record: ${record.record_id}`,
+      ];
+    }),
+  ].join("\n");
+}
+
+function shortRevision(value: string): string {
+  return value.length > 12 ? value.slice(0, 12) : value;
+}
+
+function shortHash(value: string): string {
+  return value.slice(0, 12);
 }
 
 async function collectSelection(

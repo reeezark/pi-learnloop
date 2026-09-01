@@ -645,6 +645,144 @@ test("rejects a malformed complete-assessment history descriptor", async (t) => 
   );
 });
 
+test("sends one authenticated bounded history query and validates the exact response", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "H".repeat(22);
+  const token = "I".repeat(43);
+  const requests: Array<{ method?: string; url?: string; authorization?: string; body: string }> = [];
+  const expected = validHistoryResponse();
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      requests.push({ method: request.method, url: request.url, body: "" });
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    const body = await readBody(request);
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorization: request.headers.authorization,
+      body,
+    });
+    writeJSON(response, 200, expected);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  const result = await new DaemonEvidenceClient({ runtimeDir }).history("/work/repository", 20);
+
+  assert.deepEqual(result, expected);
+  assert.deepEqual(requests, [
+    { method: "GET", url: "/v1/status", body: "" },
+    {
+      method: "POST",
+      url: "/v1/learning-history-queries",
+      authorization: `PiLearnLoop ${token}`,
+      body: JSON.stringify({ repository: "/work/repository", limit: 20 }),
+    },
+  ]);
+});
+
+test("rejects a history response that adds source-bearing repository metadata", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "J".repeat(22);
+  const token = "K".repeat(43);
+  const valid = validHistoryResponse();
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    await readBody(request);
+    writeJSON(response, 200, {
+      ...valid,
+      records: [{ ...valid.records[0], canonical_root: "/private/source-bearing-repository" }],
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  await assert.rejects(
+    new DaemonEvidenceClient({ runtimeDir }).history("/work/repository", 20),
+    (error: unknown) => error instanceof EvidenceClientError && error.code === "protocol_mismatch",
+  );
+});
+
+test("preserves history-unavailable and never retries the query", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "L".repeat(22);
+  const token = "M".repeat(43);
+  let queryRequests = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    queryRequests += 1;
+    await readBody(request);
+    writeJSON(response, 503, {
+      protocol_version: 1,
+      error: { code: "history_unavailable", message: "local learning history is unavailable" },
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  await assert.rejects(
+    new DaemonEvidenceClient({ runtimeDir }).history("/work/repository", 20),
+    (error: unknown) => error instanceof EvidenceClientError && error.code === "history_unavailable",
+  );
+  assert.equal(queryRequests, 1);
+});
+
 async function writeProtectedFile(path: string, content: string): Promise<void> {
   await writeFile(path, content, { mode: 0o600 });
   await chmod(path, 0o600);
@@ -716,6 +854,39 @@ function validCompleteAssessmentResponse() {
     },
     label: "partial",
     history: { saved: true, record_id: `lr1-${"d".repeat(43)}` },
+  };
+}
+
+function validHistoryResponse() {
+  return {
+    protocol_version: 1 as const,
+    records: [
+      {
+        record_id: `lr1-${"j".repeat(43)}`,
+        started_at: "2026-09-01T12:00:00Z",
+        finished_at: "2026-09-01T12:01:00Z",
+        status: "complete" as const,
+        failure_code: null,
+        base_revision: "a".repeat(40),
+        head_revision: "c".repeat(40),
+        evidence_manifest_sha256: "b".repeat(64),
+        question_schema_version: 1,
+        assessment_schema_version: 1,
+        question_prompt: { id: "question-prompt", version: "1.0.0", sha256: "d".repeat(64) },
+        assessment_prompt: { id: "assessment-prompt", version: "1.0.0", sha256: "e".repeat(64) },
+        pi_version: "0.84.3",
+        provider: "provider",
+        model_id: "model",
+        thinking_level: "off",
+        follow_up_used: false,
+        label: "understood" as const,
+        outcomes: [
+          { question_id: "Q1" as const, question_kind: "code_specific" as const, verdict: "demonstrated" as const },
+          { question_id: "Q2" as const, question_kind: "code_specific" as const, verdict: "demonstrated" as const },
+          { question_id: "Q3" as const, question_kind: "go_backend" as const, verdict: "demonstrated" as const },
+        ],
+      },
+    ],
   };
 }
 

@@ -12,6 +12,8 @@ import {
   type AssessmentSubmission,
   type EvidencePreviewResponse,
   type EvidenceSelection,
+  type LearningHistoryRecord,
+  type LearningHistoryResponse,
   type QuestionSet,
 } from "./learn-command.ts";
 
@@ -19,6 +21,7 @@ const STATUS_TIMEOUT_MS = 2_000;
 const PREVIEW_TIMEOUT_MS = 35_000;
 const QUESTION_SET_TIMEOUT_MS = 130_000;
 const ASSESSMENT_TIMEOUT_MS = 130_000;
+const HISTORY_QUERY_TIMEOUT_MS = 35_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const SERVER_ERROR_CODES = new Set<EvidenceClientErrorCode>([
   "unauthorized",
@@ -37,6 +40,7 @@ const SERVER_ERROR_CODES = new Set<EvidenceClientErrorCode>([
   "evaluator_invalid_output",
   "evaluator_unavailable",
   "evaluator_timeout",
+  "history_unavailable",
 ]);
 
 interface RuntimeDescriptor {
@@ -140,6 +144,35 @@ export class DaemonEvidenceClient implements LearnClient {
       return result.body.assessment_turn.disposition === "complete"
         ? { turn: result.body.assessment_turn, label: result.body.label!, history: result.body.history! }
         : { turn: result.body.assessment_turn };
+    } catch (error) {
+      throw normalizeClientError(error);
+    }
+  }
+
+  async history(repository: string, limit: number): Promise<LearningHistoryResponse> {
+    try {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+        throw new EvidenceClientError("invalid_request", "history limit is invalid");
+      }
+      const { port, token } = await this.discover();
+      const result = await requestJSON(
+        port,
+        "POST",
+        "/v1/learning-history-queries",
+        JSON.stringify({ repository, limit }),
+        token,
+        HISTORY_QUERY_TIMEOUT_MS,
+      );
+      if (result.statusCode === 401) {
+        throw new EvidenceClientError("unauthorized", "authentication required");
+      }
+      if (result.statusCode !== 200) {
+        throw parseServerError(result.body);
+      }
+      if (!isLearningHistoryResponse(result.body, limit)) {
+        throw new EvidenceClientError("protocol_mismatch", "daemon history response is invalid");
+      }
+      return result.body;
     } catch (error) {
       throw normalizeClientError(error);
     }
@@ -509,6 +542,136 @@ function isHistorySave(value: unknown): boolean {
     );
   }
   return hasOnlyKeys(value, "saved", "reason") && value.reason === "storage_unavailable";
+}
+
+function isLearningHistoryResponse(value: unknown, limit: number): value is LearningHistoryResponse {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(value, "protocol_version", "records") ||
+    value.protocol_version !== 1 ||
+    !Array.isArray(value.records) ||
+    value.records.length > limit ||
+    !value.records.every(isLearningHistoryRecord)
+  ) {
+    return false;
+  }
+  const records = value.records;
+  const recordIDs = records.map((record) => record.record_id);
+  if (new Set(recordIDs).size !== recordIDs.length) {
+    return false;
+  }
+  return records.every((record, index) =>
+    index === 0 || Date.parse(records[index - 1]!.started_at) >= Date.parse(record.started_at)
+  );
+}
+
+function isLearningHistoryRecord(value: unknown): value is LearningHistoryRecord {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(
+      value,
+      "record_id",
+      "started_at",
+      "finished_at",
+      "status",
+      "failure_code",
+      "base_revision",
+      "head_revision",
+      "evidence_manifest_sha256",
+      "question_schema_version",
+      "assessment_schema_version",
+      "question_prompt",
+      "assessment_prompt",
+      "pi_version",
+      "provider",
+      "model_id",
+      "thinking_level",
+      "follow_up_used",
+      "label",
+      "outcomes",
+    ) ||
+    typeof value.record_id !== "string" ||
+    !/^lr1-[A-Za-z0-9_-]{43}$/.test(value.record_id) ||
+    !isHistoryTimestamp(value.started_at) ||
+    (value.finished_at !== null && !isHistoryTimestamp(value.finished_at)) ||
+    !["running", "complete", "failed", "interrupted"].includes(String(value.status)) ||
+    (value.failure_code !== null && !["evaluator_failed", "evaluator_invalid_output", "evaluator_timeout"].includes(String(value.failure_code))) ||
+    !isBoundedHistoryValue(value.base_revision, 256) ||
+    !isBoundedHistoryValue(value.head_revision, 256) ||
+    !isLowerSHA256(value.evidence_manifest_sha256) ||
+    value.question_schema_version !== 1 ||
+    value.assessment_schema_version !== 1 ||
+    !isHistoryPrompt(value.question_prompt) ||
+    !isHistoryPrompt(value.assessment_prompt) ||
+    value.pi_version !== "0.84.3" ||
+    !isBoundedHistoryArgument(value.provider, 128) ||
+    !isBoundedHistoryArgument(value.model_id, 256) ||
+    !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(value.thinking_level)) ||
+    typeof value.follow_up_used !== "boolean" ||
+    (value.label !== null && !["understood", "partial", "review_needed"].includes(String(value.label))) ||
+    !Array.isArray(value.outcomes)
+  ) {
+    return false;
+  }
+  switch (value.status) {
+    case "running":
+      return value.finished_at === null && value.failure_code === null && value.label === null && value.outcomes.length === 0;
+    case "complete":
+      return value.finished_at !== null && value.failure_code === null && value.label !== null && isCompleteHistoryOutcomes(value.outcomes);
+    case "failed":
+      return value.finished_at !== null && value.failure_code !== null && value.label === null && value.outcomes.length === 0;
+    case "interrupted":
+      return value.finished_at !== null && value.failure_code === null && value.label === null && value.outcomes.length === 0;
+    default:
+      return false;
+  }
+}
+
+function isCompleteHistoryOutcomes(value: unknown[]): boolean {
+  const kinds = ["code_specific", "code_specific", "go_backend"];
+  return value.length === 3 && value.every((outcome, index) =>
+    isObject(outcome) &&
+    hasOnlyKeys(outcome, "question_id", "question_kind", "verdict") &&
+    outcome.question_id === `Q${index + 1}` &&
+    outcome.question_kind === kinds[index] &&
+    ["demonstrated", "partial", "not_demonstrated"].includes(String(outcome.verdict))
+  );
+}
+
+function isHistoryPrompt(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    hasOnlyKeys(value, "id", "version", "sha256") &&
+    isBoundedHistoryValue(value.id, 128) &&
+    isBoundedHistoryValue(value.version, 64) &&
+    isLowerSHA256(value.sha256)
+  );
+}
+
+function isHistoryTimestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+function isLowerSHA256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isBoundedHistoryArgument(value: unknown, maximumBytes: number): value is string {
+  return isBoundedHistoryValue(value, maximumBytes) && !value.startsWith("-");
+}
+
+function isBoundedHistoryValue(value: unknown, maximumBytes: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() === value &&
+    value !== "" &&
+    Buffer.byteLength(value, "utf8") <= maximumBytes &&
+    !/[\u0000-\u001f\u007f-\u009f]/u.test(value)
+  );
 }
 
 function isFollowUpQuestion(value: unknown): boolean {

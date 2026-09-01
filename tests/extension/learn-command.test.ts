@@ -3,13 +3,128 @@ import test from "node:test";
 
 import {
   createLearnCommand,
+  createLearnHistoryCommand,
   EvidenceClientError,
   type AssessmentResult,
   type LearnClient,
   type EvidencePreviewResponse,
   formatPreview,
   type LearnCommandContext,
+  type LearningHistoryClient,
 } from "../../extensions/lib/learn-command.ts";
+
+test("manual learning history query renders source-free repository records without a model client", async () => {
+  const requests: Parameters<LearningHistoryClient["history"]>[] = [];
+  const client: LearningHistoryClient = {
+    async history(repository, limit) {
+      requests.push([repository, limit]);
+      return {
+        protocol_version: 1,
+        records: [{
+          record_id: `lr1-${"h".repeat(43)}`,
+          started_at: "2026-09-01T12:00:00Z",
+          finished_at: "2026-09-01T12:01:00Z",
+          status: "complete",
+          failure_code: null,
+          base_revision: "a".repeat(40),
+          head_revision: "c".repeat(40),
+          evidence_manifest_sha256: "b".repeat(64),
+          question_schema_version: 1,
+          assessment_schema_version: 1,
+          question_prompt: { id: "question-prompt", version: "1.0.0", sha256: "d".repeat(64) },
+          assessment_prompt: { id: "assessment-prompt", version: "1.0.0", sha256: "e".repeat(64) },
+          pi_version: "0.84.3",
+          provider: "provider",
+          model_id: "model",
+          thinking_level: "off",
+          follow_up_used: false,
+          label: "partial",
+          outcomes: [
+            { question_id: "Q1", question_kind: "code_specific", verdict: "demonstrated" },
+            { question_id: "Q2", question_kind: "code_specific", verdict: "partial" },
+            { question_id: "Q3", question_kind: "go_backend", verdict: "not_demonstrated" },
+          ],
+        }],
+      };
+    },
+  };
+  const notifications: Array<{ message: string; type?: "info" | "warning" | "error" }> = [];
+  const context: LearnCommandContext = {
+    cwd: "/work/repository",
+    hasUI: true,
+    isProjectTrusted: () => true,
+    ui: {
+      async select() { throw new Error("must not select"); },
+      async input() { throw new Error("must not collect input"); },
+      async confirm() { throw new Error("must not confirm a model call"); },
+      notify(message, type) { notifications.push({ message, type }); },
+    },
+  };
+
+  await createLearnHistoryCommand(client)("", context);
+
+  assert.deepEqual(requests, [["/work/repository", 20]]);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.type, "info");
+  assert.match(notifications[0]?.message ?? "", /Learning history/);
+  assert.match(notifications[0]?.message ?? "", /partial/);
+  assert.match(notifications[0]?.message ?? "", /Q2 code_specific partial/);
+  assert.match(notifications[0]?.message ?? "", /provider\/model/);
+  assert.match(notifications[0]?.message ?? "", /question-prompt@1\.0\.0/);
+});
+
+test("empty learning history is a normal informational result", async () => {
+  const client: LearningHistoryClient = {
+    async history() { return { protocol_version: 1, records: [] }; },
+  };
+  const notifications: Array<{ message: string; type?: "info" | "warning" | "error" }> = [];
+  const context: LearnCommandContext = {
+    cwd: "/work/repository",
+    hasUI: true,
+    isProjectTrusted: () => true,
+    ui: {
+      async select() { throw new Error("must not select"); },
+      async input() { throw new Error("must not collect input"); },
+      async confirm() { throw new Error("must not confirm"); },
+      notify(message, type) { notifications.push({ message, type }); },
+    },
+  };
+
+  await createLearnHistoryCommand(client)("", context);
+
+  assert.deepEqual(notifications, [{
+    message: "No learning history is available for this repository.",
+    type: "info",
+  }]);
+});
+
+test("unavailable learning history is explained without attempting repair", async () => {
+  let requests = 0;
+  const client: LearningHistoryClient = {
+    async history() {
+      requests += 1;
+      throw new EvidenceClientError("history_unavailable", "storage unavailable");
+    },
+  };
+  const notifications: Array<{ message: string; type?: "info" | "warning" | "error" }> = [];
+  const context: LearnCommandContext = {
+    cwd: "/work/repository",
+    hasUI: true,
+    isProjectTrusted: () => true,
+    ui: {
+      async select() { throw new Error("must not select"); },
+      async input() { throw new Error("must not collect input"); },
+      async confirm() { throw new Error("must not confirm"); },
+      notify(message, type) { notifications.push({ message, type }); },
+    },
+  };
+
+  await createLearnHistoryCommand(client)("", context);
+
+  assert.equal(requests, 1);
+  assert.equal(notifications[0]?.type, "warning");
+  assert.match(notifications[0]?.message ?? "", /left the database unchanged/i);
+});
 
 test("manual commit range shows the selected evidence preview", async () => {
   const requests: Parameters<LearnClient["preview"]>[] = [];

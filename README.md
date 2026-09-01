@@ -1,6 +1,6 @@
 # Pi LearnLoop
 
-Pi LearnLoop is a local learning companion for Go developers who use the Pi coding agent. Its current production slice lets you manually choose a Git changeset with `/learn`, inspect the changed-Go evidence, explicitly approve sending only those excerpts to your configured model, answer three evidence-backed learning questions, and receive concise per-question feedback plus a deterministic repository-scoped label.
+Pi LearnLoop is a local learning companion for Go developers who use the Pi coding agent. Its current production slice lets you manually choose a Git changeset with `/learn`, inspect the changed-Go evidence, explicitly approve sending only those excerpts to your configured model, answer three evidence-backed learning questions, receive concise per-question feedback plus a deterministic repository-scoped label, and later inspect source-free local results with `/learn-history`.
 
 ## Current Status
 
@@ -8,7 +8,7 @@ Implemented:
 
 - bounded changed-Go declaration evidence for commit ranges and working trees;
 - an authenticated, IPv4-loopback-only Go daemon;
-- a Pi 0.84.x TypeScript extension that registers the manual `/learn` command;
+- a Pi 0.84.x TypeScript extension that registers the manual `/learn` and `/learn-history` commands;
 - preview output containing changed files, mapped symbols, approximate excerpt bytes, and truncation details;
 - a five-minute, in-memory, single-use continuation that retains the exact bounded preview;
 - an authenticated `/v1/question-sets` route and isolated Pi 0.84.3 RPC evaluator that return exactly two code-specific questions and one Go/backend question;
@@ -17,11 +17,11 @@ Implemented:
 - an additive assessment descriptor, strict authenticated `/v1/assessment-turns` route, and thin answer/F1/result UI with no client retries;
 - a released embedded assessment prompt and production Pi 0.84.3 RPC adapter that starts a fresh isolated process for the initial assessment and, when requested, one F1 assessment;
 - deterministic service, protocol, concurrency, cancellation, extension, and fake-process tests for the complete answer flow;
-- daemon-owned protected SQLite history at `os.UserConfigDir()/pi-learnloop/data/history.db`, with schema v1 migrations, source-free running/F1/terminal records, startup interruption marking, and explicit save status in complete assessment responses.
+- daemon-owned protected SQLite history at `os.UserConfigDir()/pi-learnloop/data/history.db`, with schema v1 migrations, source-free running/F1/terminal records, startup interruption marking, and explicit save status in complete assessment responses;
+- a strict authenticated `/v1/learning-history-queries` route capped at 50 records and a manual `/learn-history` UI that requests the 20 newest records for the current canonical Git repository without a model call.
 
 Not implemented:
 
-- the user-visible repository history query and `/learn-history` command;
 - SSE, background jobs, Session indexing, or automatic reminders;
 - npm publication or release automation.
 
@@ -66,6 +66,14 @@ Choose either a working tree against an explicit base revision or an explicit co
 
 Pi LearnLoop disables Pi Agent retry and auto-compaction for the evaluator and never retries a continuation or model call itself. The supported configuration keeps Pi's external `retry.provider.maxRetries` setting at `0`; the RPC API cannot enforce that setting.
 
+To inspect the newest source-free records for the current Git repository, invoke:
+
+```text
+/learn-history
+```
+
+This command accepts no arguments, returns at most 20 records newest-first, and does not contact a model. An empty result is normal. If the database is unsafe, corrupt, unreadable, or newer than the running daemon supports, the command reports that local history is unavailable and leaves the database unchanged.
+
 ### Optional live smoke test
 
 Automated tests always use a fake Pi executable and never contact a provider. A live smoke test is intentionally manual and opt-in because it transmits reviewed source excerpts and may incur cost:
@@ -97,6 +105,8 @@ The package has no third-party runtime npm dependency. `@earendil-works/pi-codin
 - Daemon assessment state, source, answers, prompt bodies, model output, and feedback are never persisted or logged.
 - The daemon opens the protected history store at `os.UserConfigDir()/pi-learnloop/data/history.db`. It accepts only canonical repository identity, revisions, manifest/schema/prompt/model provenance, safe lifecycle status, deterministic label, and Q1/Q2/Q3 kinds/verdicts. It rejects symlinked, overbroad, wrong-owner, hard-linked, non-local, corrupt, or newer-schema storage without automatic repair, then keeps preview and assessment available without history.
 - A validated initial submission creates one source-free `running` record before evaluation when storage is available. F1 reuses it, completion stores exactly three verdicts, known evaluator failures use bounded safe codes, and restart converts leftover `running` rows to `interrupted` without resuming or retrying evaluation.
+- `/learn-history` sends only the current trusted working-directory path and a fixed limit of 20 to the authenticated local daemon. The daemon verifies the canonical Git root and returns only matching source-free records; it never returns the stored canonical root, source, questions, answers, feedback, or records from another repository.
+- SQLite WAL state is part of the database. Do not copy only `history.db` while the daemon is running; `history.db-wal` and `history.db-shm` may be required for a consistent manual backup. No backup or export command is implemented.
 - Production question generation and every assessment turn start a frozen, symlink-resolved Pi 0.84.3 executable directly without a shell. Sessions, tools, extensions, skills, prompt templates, themes, context files, and project approval are disabled.
 - Only the selected excerpts and non-secret bundle provenance enter the Pi-managed model request. Credentials never enter HTTP, argv, prompts, logs, persisted records, or model-visible content.
 - RPC runtime, stdout, stderr, and final output are bounded; malformed output, discovered commands, tool events, retries, compaction, timeout, cancellation, or child failure fail closed. The child is always terminated and reaped.

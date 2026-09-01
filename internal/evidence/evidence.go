@@ -168,7 +168,7 @@ func Preview(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 
-	root, err := repositoryRoot(ctx, request.Repository)
+	root, err := ResolveRepositoryRoot(ctx, request.Repository)
 	if err != nil {
 		return Result{}, err
 	}
@@ -251,7 +251,12 @@ func validateRequest(request Request) error {
 	return nil
 }
 
-func repositoryRoot(ctx context.Context, repository string) (string, error) {
+// ResolveRepositoryRoot verifies repository through Git and returns its
+// canonical top-level working-tree path.
+func ResolveRepositoryRoot(ctx context.Context, repository string) (string, error) {
+	if strings.TrimSpace(repository) == "" {
+		return "", previewError(ErrorInvalidRequest, "resolve repository path", errors.New("repository is required"))
+	}
 	absolute, err := filepath.Abs(repository)
 	if err != nil {
 		return "", previewError(ErrorInvalidRequest, "resolve repository path", err)

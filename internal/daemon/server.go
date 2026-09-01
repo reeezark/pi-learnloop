@@ -25,14 +25,16 @@ import (
 )
 
 const (
-	maxRequestBytes            = 16 * 1024
-	maxQuestionSetRequestBytes = 4 * 1024
-	maxAssessmentRequestBytes  = 16 * 1024
-	evidenceTimeout            = 30 * time.Second
-	evaluationTimeout          = 120 * time.Second
-	maxFiles                   = 20
-	maxDeclarations            = 100
-	maxExcerptBytes            = 128 * 1024
+	maxRequestBytes             = 16 * 1024
+	maxQuestionSetRequestBytes  = 4 * 1024
+	maxAssessmentRequestBytes   = 16 * 1024
+	maxHistoryQueryRequestBytes = 4 * 1024
+	evidenceTimeout             = 30 * time.Second
+	evaluationTimeout           = 120 * time.Second
+	maxFiles                    = 20
+	maxDeclarations             = 100
+	maxExcerptBytes             = 128 * 1024
+	maxHistoryRecords           = 50
 )
 
 type previewRequest struct {
@@ -111,10 +113,50 @@ type assessmentTurnRequest struct {
 	Answer       string                       `json:"answer"`
 }
 
+type learningHistoryQueryRequest struct {
+	Repository string `json:"repository"`
+	Limit      int    `json:"limit"`
+}
+
+type historyPromptResponse struct {
+	ID      string `json:"id"`
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
+}
+
+type historyOutcomeResponse struct {
+	QuestionID   string               `json:"question_id"`
+	QuestionKind history.QuestionKind `json:"question_kind"`
+	Verdict      history.Verdict      `json:"verdict"`
+}
+
+type learningHistoryRecordResponse struct {
+	RecordID                string                   `json:"record_id"`
+	StartedAt               string                   `json:"started_at"`
+	FinishedAt              *string                  `json:"finished_at"`
+	Status                  history.Status           `json:"status"`
+	FailureCode             *history.FailureCode     `json:"failure_code"`
+	BaseRevision            string                   `json:"base_revision"`
+	HeadRevision            string                   `json:"head_revision"`
+	EvidenceManifestSHA256  string                   `json:"evidence_manifest_sha256"`
+	QuestionSchemaVersion   int                      `json:"question_schema_version"`
+	AssessmentSchemaVersion int                      `json:"assessment_schema_version"`
+	QuestionPrompt          historyPromptResponse    `json:"question_prompt"`
+	AssessmentPrompt        historyPromptResponse    `json:"assessment_prompt"`
+	PiVersion               string                   `json:"pi_version"`
+	Provider                string                   `json:"provider"`
+	ModelID                 string                   `json:"model_id"`
+	ThinkingLevel           string                   `json:"thinking_level"`
+	FollowUpUsed            bool                     `json:"follow_up_used"`
+	Label                   *history.Label           `json:"label"`
+	Outcomes                []historyOutcomeResponse `json:"outcomes"`
+}
+
 type serverServices struct {
 	continuations     *continuationStore
 	questionEvaluator evaluator.QuestionEvaluator
 	assessments       *assessment.Service
+	history           *history.Store
 }
 
 func newHandler(instanceID, authority, token string, services serverServices) http.Handler {
@@ -134,10 +176,135 @@ func newHandler(instanceID, authority, token string, services serverServices) ht
 			handleQuestionSet(response, request, token, services)
 		case "/v1/assessment-turns":
 			handleAssessmentTurn(response, request, token, services)
+		case "/v1/learning-history-queries":
+			handleLearningHistoryQuery(response, request, token, services)
 		default:
 			writeError(response, http.StatusNotFound, "not_found", "route not found")
 		}
 	})
+}
+
+func handleLearningHistoryQuery(response http.ResponseWriter, request *http.Request, token string, services serverServices) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if !authorized(request, token) {
+		response.Header().Set("WWW-Authenticate", "PiLearnLoop")
+		writeError(response, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(response, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(response, request.Body, maxHistoryQueryRequestBytes)
+	content, err := io.ReadAll(request.Body)
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+			return
+		}
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	var payload learningHistoryQueryRequest
+	if err := decodeStrictJSON(content, &payload); err != nil || !validLearningHistoryQuery(payload) {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	queryCtx, cancel := context.WithTimeout(request.Context(), evidenceTimeout)
+	defer cancel()
+	canonicalRoot, err := evidence.ResolveRepositoryRoot(queryCtx, payload.Repository)
+	if err != nil {
+		writeLearningHistoryRepositoryError(response, queryCtx, err)
+		return
+	}
+	if services.history == nil {
+		writeError(response, http.StatusServiceUnavailable, "history_unavailable", "local learning history is unavailable")
+		return
+	}
+	records, err := services.history.List(queryCtx, canonicalRoot, payload.Limit)
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "history_unavailable", "local learning history is unavailable")
+		return
+	}
+
+	mapped := make([]learningHistoryRecordResponse, len(records))
+	for index, record := range records {
+		mapped[index] = mapLearningHistoryRecord(record)
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"protocol_version": protocolVersion,
+		"records":          mapped,
+	})
+}
+
+func validLearningHistoryQuery(request learningHistoryQueryRequest) bool {
+	return request.Repository != "" && len(request.Repository) <= 4096 && filepath.IsAbs(request.Repository) &&
+		request.Limit > 0 && request.Limit <= maxHistoryRecords
+}
+
+func writeLearningHistoryRepositoryError(response http.ResponseWriter, ctx context.Context, err error) {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		writeError(response, http.StatusGatewayTimeout, "deadline_exceeded", "repository verification timed out")
+		return
+	}
+	switch evidence.ErrorCodeOf(err) {
+	case evidence.ErrorInvalidRequest:
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+	case evidence.ErrorNotRepository:
+		writeError(response, http.StatusUnprocessableEntity, "invalid_repository", "repository is not supported")
+	default:
+		writeError(response, http.StatusInternalServerError, "internal_error", "repository verification failed")
+	}
+}
+
+func mapLearningHistoryRecord(record history.Record) learningHistoryRecordResponse {
+	response := learningHistoryRecordResponse{
+		RecordID:                record.RecordID,
+		StartedAt:               record.Start.StartedAt.Format(time.RFC3339Nano),
+		Status:                  record.Status,
+		BaseRevision:            record.Start.BaseRevision,
+		HeadRevision:            record.Start.HeadRevision,
+		EvidenceManifestSHA256:  record.Start.EvidenceManifestSHA256,
+		QuestionSchemaVersion:   record.Start.QuestionSchemaVersion,
+		AssessmentSchemaVersion: record.Start.AssessmentSchemaVersion,
+		QuestionPrompt:          mapHistoryPrompt(record.Start.QuestionPrompt),
+		AssessmentPrompt:        mapHistoryPrompt(record.Start.AssessmentPrompt),
+		PiVersion:               record.Start.PiVersion,
+		Provider:                record.Start.Provider,
+		ModelID:                 record.Start.ModelID,
+		ThinkingLevel:           record.Start.ThinkingLevel,
+		FollowUpUsed:            record.FollowUpUsed,
+		Outcomes:                make([]historyOutcomeResponse, len(record.Outcomes)),
+	}
+	if record.FinishedAt != nil {
+		finishedAt := record.FinishedAt.Format(time.RFC3339Nano)
+		response.FinishedAt = &finishedAt
+	}
+	if record.FailureCode != "" {
+		failureCode := record.FailureCode
+		response.FailureCode = &failureCode
+	}
+	if record.Label != "" {
+		label := record.Label
+		response.Label = &label
+	}
+	for index, outcome := range record.Outcomes {
+		response.Outcomes[index] = historyOutcomeResponse{
+			QuestionID: outcome.QuestionID, QuestionKind: outcome.QuestionKind, Verdict: outcome.Verdict,
+		}
+	}
+	return response
+}
+
+func mapHistoryPrompt(prompt history.PromptProvenance) historyPromptResponse {
+	return historyPromptResponse{ID: prompt.ID, Version: prompt.Version, SHA256: prompt.SHA256}
 }
 
 func hasNonEmptyHeader(header http.Header, name string) bool {

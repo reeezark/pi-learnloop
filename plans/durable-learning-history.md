@@ -1,10 +1,10 @@
 ---
 id: durable-learning-history
-status: active
+status: complete
 risk: high
 current_phase: 3
-phase_status: awaiting_approval
-updated: 2026-09-01
+phase_status: complete
+updated: 2026-09-02
 ---
 
 # Durable Learning History and Safe Recovery
@@ -378,13 +378,15 @@ Goal: let the user manually inspect bounded local history without a model call.
 Allowed files:
 
 - `internal/history/` query code/tests if not completed in Phase 1;
-- `internal/daemon/server.go` and focused route/integration tests;
+- `internal/evidence/evidence.go` and focused tests for one narrow canonical-root resolver that reuses the existing Git verification path;
+- `internal/daemon/server.go`, `internal/daemon/daemon.go`, and focused route/integration tests;
 - `extensions/pi-learnloop.ts`, `extensions/lib/daemon-client.ts`, `extensions/lib/learn-command.ts`, and focused extension tests;
 - README, PROJECT, plan, accepted ADR, and the Phase 3 checkpoint.
 
 Required work:
 
 - add the strict authenticated bounded repository query;
+- reuse the evidence module's existing Git-root canonicalization rather than duplicate repository verification in the daemon, and pass the already-open store through production composition;
 - add `/learn-history` registration, client validation, empty/error handling, and concise rendering;
 - ensure no cross-repository results, source-bearing values, or model calls are possible;
 - document database location, privacy boundary, backup caution for WAL, and recovery semantics.
@@ -463,3 +465,5 @@ No automated verification may contact a provider.
 - `Resolved 2026-09-01` — The user explicitly authorized `modernc.org/sqlite v1.35.0` and its complete transitive module graph for Phase 1.
 - `Resolved 2026-09-01` — The accepted non-destructive policy adds no automatic retention, deletion, export, or repair in this task.
 - `Resolved 2026-09-01` — The user explicitly authorized durable-learning-history Phase 2 implementation.
+- `Resolved 2026-09-01` — The user explicitly authorized durable-learning-history Phase 3 implementation by directing the active plan to continue.
+- `Resolved 2026-09-02` — Code investigation showed the history route must reuse the evidence module's Git-root resolver and receive the daemon-owned store through production composition; both were added as narrow Phase 3 allowed-file changes rather than duplicating verification or routing through assessment state.

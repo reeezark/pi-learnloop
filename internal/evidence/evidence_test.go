@@ -13,6 +13,33 @@ import (
 	"github.com/reeezark/pi-learnloop/internal/evidence"
 )
 
+func TestResolveRepositoryRootCanonicalizesNestedPath(t *testing.T) {
+	repository := newRepository(t)
+	nested := filepath.Join(repository, "nested", "package")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", nested, err)
+	}
+
+	got, err := evidence.ResolveRepositoryRoot(context.Background(), nested)
+	if err != nil {
+		t.Fatalf("ResolveRepositoryRoot() error = %v", err)
+	}
+	want, err := filepath.EvalSymlinks(repository)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", repository, err)
+	}
+	if got != want {
+		t.Fatalf("ResolveRepositoryRoot() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveRepositoryRootRejectsEmptyPath(t *testing.T) {
+	_, err := evidence.ResolveRepositoryRoot(context.Background(), "")
+	if evidence.ErrorCodeOf(err) != evidence.ErrorInvalidRequest {
+		t.Fatalf("ResolveRepositoryRoot(empty) error = %v, want invalid_request", err)
+	}
+}
+
 func TestPreviewMapsCommitRangeToChangedDeclarations(t *testing.T) {
 	repo := newRepository(t)
 	writeRepositoryFile(t, repo, "sample.go", `package sample
