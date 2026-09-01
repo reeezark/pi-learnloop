@@ -35,12 +35,7 @@ Allowed prompt states are `draft | released | deprecated`.
 | Prompt | Version | Input | Output |
 | --- | --- | --- | --- |
 | `evaluator-question-generation` | `1.0.0` | `evaluator-input@1` | `evaluator-question-set@1` |
-
-## Current Draft Prompt
-
-| Prompt | Version | Input | Output | Product status |
-| --- | --- | --- | --- | --- |
-| `evaluator-answer-assessment` | `1.0.0` | `evaluator-assessment-input@1` | `evaluator-assessment-turn@1` | Phase 1 contract asset only; not embedded or callable |
+| `evaluator-answer-assessment` | `1.0.0` | `evaluator-assessment-input@1` | `evaluator-assessment-turn@1` |
 
 ## Version Rules
 

@@ -1,9 +1,9 @@
 ---
 id: answer-assessment-workflow
-status: active
+status: complete
 risk: high
 current_phase: 3
-phase_status: awaiting_approval
+phase_status: complete
 updated: 2026-09-01
 ---
 
@@ -29,7 +29,7 @@ Adding answers crosses new high-risk seams:
 - the extension must collect answers without moving assessment rules into TypeScript;
 - a model process must not remain alive while waiting for human input.
 
-ADR-0004 was accepted on 2026-09-01. Phases 1 and 2 are complete; Phase 3 remains behind a separate stop gate.
+ADR-0004 was accepted on 2026-09-01. All three implementation phases are complete.
 
 ## 3. Current Behavior
 
@@ -343,7 +343,7 @@ Acceptance criteria:
 
 ### Phase 3 — Isolated Pi RPC assessment adapter
 
-Status: awaiting explicit authorization.
+Status: complete on 2026-09-01. See `docs/checkpoints/answer-assessment-workflow-phase-3.md`.
 
 Goal: release and embed the assessment prompt, wire the production Pi adapter through the assessment module, and verify every model turn with a fake executable while keeping live smoke opt-in.
 
@@ -425,4 +425,4 @@ ADR-0004 accepted the following answers on 2026-09-01. They are fixed constraint
 6. Accept no recovery or retry before the later SQLite plan: restart, expiry, evaluator failure, or lost response requires a new `/learn` flow.
 7. Accept Pi 0.84.3's string input dialog for the first answer UI; custom multiline UI remains out of scope.
 
-Phase 1 is complete. Phase 2 must not begin until it is explicitly authorized.
+Phases 1, 2, and 3 are complete. Durable storage and every other deferred capability require a new plan and authorization.

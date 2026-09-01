@@ -31,12 +31,38 @@ type PiRPCEvaluator struct {
 	systemPrompt string
 }
 
+// PiRPCAssessmentEvaluator runs one isolated, no-tools Pi RPC process per
+// answer-assessment turn. It has a separate narrow interface from question
+// generation while sharing only private process-isolation mechanics.
+type PiRPCAssessmentEvaluator struct {
+	executable   string
+	systemPrompt string
+}
+
 // NewPiRPCEvaluator resolves and preflights the supported Pi executable once.
 // All failures are intentionally opaque because paths and raw process output
 // must not cross the evaluator boundary.
 func NewPiRPCEvaluator(ctx context.Context, systemPrompt string) (*PiRPCEvaluator, error) {
+	executable, err := resolvePiRPCExecutable(ctx, systemPrompt)
+	if err != nil {
+		return nil, err
+	}
+	return &PiRPCEvaluator{executable: executable, systemPrompt: systemPrompt}, nil
+}
+
+// NewPiRPCAssessmentEvaluator resolves and preflights the supported Pi
+// executable once and freezes the released assessment prompt.
+func NewPiRPCAssessmentEvaluator(ctx context.Context, systemPrompt string) (*PiRPCAssessmentEvaluator, error) {
+	executable, err := resolvePiRPCExecutable(ctx, systemPrompt)
+	if err != nil {
+		return nil, err
+	}
+	return &PiRPCAssessmentEvaluator{executable: executable, systemPrompt: systemPrompt}, nil
+}
+
+func resolvePiRPCExecutable(ctx context.Context, systemPrompt string) (string, error) {
 	if ctx == nil {
-		return nil, errors.New("Pi evaluator is unavailable")
+		return "", errors.New("Pi evaluator is unavailable")
 	}
 	if _, err := BuildPiArguments(ModelSelection{
 		PiVersion:     SupportedPiVersion,
@@ -44,31 +70,31 @@ func NewPiRPCEvaluator(ctx context.Context, systemPrompt string) (*PiRPCEvaluato
 		ModelID:       "preflight-model",
 		ThinkingLevel: "off",
 	}, systemPrompt); err != nil {
-		return nil, errors.New("Pi evaluator is unavailable")
+		return "", errors.New("Pi evaluator is unavailable")
 	}
 
 	executable, err := exec.LookPath("pi")
 	if err != nil {
-		return nil, errors.New("Pi evaluator is unavailable")
+		return "", errors.New("Pi evaluator is unavailable")
 	}
 	if !filepath.IsAbs(executable) {
 		executable, err = filepath.Abs(executable)
 		if err != nil {
-			return nil, errors.New("Pi evaluator is unavailable")
+			return "", errors.New("Pi evaluator is unavailable")
 		}
 	}
 	executable, err = filepath.EvalSymlinks(executable)
 	if err != nil {
-		return nil, errors.New("Pi evaluator is unavailable")
+		return "", errors.New("Pi evaluator is unavailable")
 	}
 	info, err := os.Stat(executable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return nil, errors.New("Pi evaluator is unavailable")
+		return "", errors.New("Pi evaluator is unavailable")
 	}
 	if err := preflightPiVersion(ctx, executable); err != nil {
-		return nil, errors.New("Pi evaluator is unavailable")
+		return "", errors.New("Pi evaluator is unavailable")
 	}
-	return &PiRPCEvaluator{executable: executable, systemPrompt: systemPrompt}, nil
+	return executable, nil
 }
 
 func preflightPiVersion(ctx context.Context, executable string) error {
@@ -104,16 +130,52 @@ func (evaluator *PiRPCEvaluator) Evaluate(ctx context.Context, input Input, sele
 	if err != nil {
 		return QuestionSet{}, invalidInput(errors.New("evaluator input cannot be encoded"))
 	}
-	arguments, err := BuildPiArguments(selection, evaluator.systemPrompt)
+	assistantText, err := evaluatePiRPC(ctx, evaluator.executable, evaluator.systemPrompt, message, selection)
 	if err != nil {
 		return QuestionSet{}, err
 	}
+	if len(assistantText) > MaxQuestionSetBytes {
+		return QuestionSet{}, invalidOutput("question-set output exceeds %d bytes", MaxQuestionSetBytes)
+	}
+	return ParseQuestionSet([]byte(assistantText), references)
+}
 
+// EvaluateAssessment sends exactly one validated assessment turn to a new Pi
+// RPC process. The process is never retained across human input.
+func (evaluator *PiRPCAssessmentEvaluator) EvaluateAssessment(ctx context.Context, input AssessmentInput, selection ModelSelection) (AssessmentTurn, error) {
+	if evaluator == nil || ctx == nil {
+		return AssessmentTurn{}, invalidInput(errors.New("assessment evaluator and context are required"))
+	}
+	if err := ValidateModelSelection(selection); err != nil {
+		return AssessmentTurn{}, err
+	}
+	if err := validateAssessmentInput(input); err != nil {
+		return AssessmentTurn{}, invalidInput(err)
+	}
+	message, err := json.Marshal(input)
+	if err != nil {
+		return AssessmentTurn{}, invalidInput(errors.New("assessment input cannot be encoded"))
+	}
+	assistantText, err := evaluatePiRPC(ctx, evaluator.executable, evaluator.systemPrompt, message, selection)
+	if err != nil {
+		return AssessmentTurn{}, err
+	}
+	if len(assistantText) > MaxAssessmentTurnBytes {
+		return AssessmentTurn{}, invalidOutput("assessment output exceeds %d bytes", MaxAssessmentTurnBytes)
+	}
+	return ParseAssessmentTurn([]byte(assistantText), input)
+}
+
+func evaluatePiRPC(ctx context.Context, executable, systemPrompt string, message []byte, selection ModelSelection) (string, error) {
+	arguments, err := BuildPiArguments(selection, systemPrompt)
+	if err != nil {
+		return "", err
+	}
 	evaluationCtx, cancel := context.WithTimeout(ctx, evaluatorProcessTimeout)
 	defer cancel()
-	process, err := startRPCProcess(evaluationCtx, evaluator.executable, arguments)
+	process, err := startRPCProcess(evaluationCtx, executable, arguments)
 	if err != nil {
-		return QuestionSet{}, errRPCFailure
+		return "", errRPCFailure
 	}
 	defer process.close()
 
@@ -122,54 +184,51 @@ func (evaluator *PiRPCEvaluator) Evaluate(ctx context.Context, input Input, sele
 		"type":    "set_auto_retry",
 		"enabled": false,
 	}); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	if err := process.awaitSimpleResponse(evaluationCtx, "pll-setup-retry", "set_auto_retry"); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	if err := process.send(evaluationCtx, map[string]any{
 		"id":      "pll-setup-compaction",
 		"type":    "set_auto_compaction",
 		"enabled": false,
 	}); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	if err := process.awaitSimpleResponse(evaluationCtx, "pll-setup-compaction", "set_auto_compaction"); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	if err := process.send(evaluationCtx, map[string]any{
 		"id":   "pll-get-commands",
 		"type": "get_commands",
 	}); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	if err := process.awaitEmptyCommands(evaluationCtx, "pll-get-commands"); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	if err := process.send(evaluationCtx, map[string]any{
 		"id":      "pll-prompt",
 		"type":    "prompt",
 		"message": string(message),
 	}); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	if err := process.awaitPromptSettled(evaluationCtx, "pll-prompt"); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	if err := process.send(evaluationCtx, map[string]any{
 		"id":   "pll-last-text",
 		"type": "get_last_assistant_text",
 	}); err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
 	assistantText, err := process.awaitLastAssistantText(evaluationCtx, "pll-last-text")
 	if err != nil {
-		return QuestionSet{}, evaluationError(evaluationCtx)
+		return "", evaluationError(evaluationCtx)
 	}
-	if len(assistantText) > MaxQuestionSetBytes {
-		return QuestionSet{}, invalidOutput("question-set output exceeds %d bytes", MaxQuestionSetBytes)
-	}
-	return ParseQuestionSet([]byte(assistantText), references)
+	return assistantText, nil
 }
 
 func inputReferences(input Input) ([]string, error) {

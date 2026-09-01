@@ -2,7 +2,7 @@
 id: answer-assessment-workflow-phase-2
 plan: answer-assessment-workflow
 phase: 2
-status: current
+status: superseded
 updated: 2026-09-01
 ---
 

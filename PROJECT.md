@@ -2,7 +2,7 @@
 
 Pi LearnLoop is a planned local learning companion for Go developers using the Pi coding agent. After a developer manually selects one or more Agent-produced changesets, the tool is intended to analyze the real Go code changes and conduct a short, evidence-backed technical interview. The purpose is to verify that the developer can explain the code rather than merely accept AI-generated output.
 
-Current repository status: Agent-development governance, the complete three-phase post-preview question-generation slice accepted in ADR-0003, and the first two answer-assessment phases accepted in ADR-0004. The `pi-learnloop daemon` command exposes explicit commit-range and working-tree previews, retains the exact bounded result behind a five-minute single-use in-memory continuation, and serves strict authenticated question-set requests. A thin Pi TypeScript extension registers manual `/learn`, renders the preview first, discloses model data sharing and possible cost, asks for explicit confirmation, and renders two code-specific questions plus one Go/backend question. Production question generation uses a separately spawned, no-session, no-tools Pi 0.84.3 RPC process. Answer assessment now has strict owned contracts, a bounded volatile lifecycle, an additive authenticated route, atomic Q1/Q2/Q3 and F1 submission, a thin answer UI, deterministic Go label aggregation, and deterministic end-to-end tests. The production assessment evaluator is intentionally absent, so the daemon reports `evaluator_unavailable` and never substitutes the deterministic fixture. Persistence, SSE, durable learning history, and production Pi assessment invocation have not been implemented.
+Current repository status: Agent-development governance, the complete three-phase post-preview question-generation slice accepted in ADR-0003, and the complete three-phase volatile answer-assessment slice accepted in ADR-0004. The `pi-learnloop daemon` command exposes explicit commit-range and working-tree previews, retains the exact bounded result behind a five-minute single-use in-memory continuation, and serves strict authenticated question and assessment requests. A thin Pi TypeScript extension registers manual `/learn`, renders the preview first, discloses model data sharing and possible cost, asks for explicit confirmation, collects Q1/Q2/Q3 plus at most one F1, and renders evidence-backed feedback with a deterministic Go-derived label. Question generation and each assessment turn use a fresh no-session, no-tools Pi 0.84.3 RPC process with released embedded prompts and shared private isolation mechanics. Persistence, SSE, durable learning history, and crash recovery have not been implemented.
 
 # Project Goals
 
@@ -35,8 +35,8 @@ The Go module uses only the standard library and the local `git` executable. The
 | Area | Target | Current Status |
 | --- | --- | --- |
 | Local service | Go 1.21 module | Evidence core and foreground `pi-learnloop daemon` command implemented with the standard library |
-| Pi integration | Thin TypeScript Pi extension | Manual preview, explicit question and answer data-sharing/cost confirmation, active model metadata propagation, three-answer collection, optional F1, and final-result rendering implemented against Pi 0.84.3; production assessment remains unavailable |
-| Agent integration | Pi RPC with an isolated no-tools evaluator Session | Production Pi 0.84.3 process adapter, released embedded prompt, strict JSONL/output bounds, and fake-process verification implemented |
+| Pi integration | Thin TypeScript Pi extension | Manual preview, explicit question and answer data-sharing/cost confirmation, active model metadata propagation, three-answer collection, optional F1, and final-result rendering implemented against Pi 0.84.3 |
+| Agent integration | Pi RPC with an isolated no-tools evaluator Session | Production Pi 0.84.3 question and assessment adapters, released embedded prompts, strict JSONL/output bounds, and fake-process verification implemented |
 | Storage | Local SQLite in WAL mode | Planned |
 | Go analysis | `go/parser`, later `go/types` and `golang.org/x/tools/go/packages` | Syntax-level changed-declaration mapping and an evaluator-ready bundle projection are implemented; type/dependency analysis remains planned |
 | Extension transport | Local HTTP plus later SSE on `127.0.0.1` | Versioned authenticated evidence-preview, single-use question-set, and assessment-turn operations implemented; SSE not implemented |
@@ -88,6 +88,7 @@ The repository currently contains Agent-development governance, the evidence/con
 │   ├── pi_contract.go
 │   ├── pi_contract_test.go
 │   ├── pi_rpc.go
+│   ├── pi_rpc_assessment_test.go
 │   └── pi_rpc_test.go
 ├── extensions/
 │   ├── pi-learnloop.ts
@@ -135,7 +136,8 @@ The repository currently contains Agent-development governance, the evidence/con
     │   ├── post-preview-evaluator-adapter-phase-2.md
     │   ├── post-preview-evaluator-adapter-phase-3.md
     │   ├── answer-assessment-workflow-phase-1.md
-    │   └── answer-assessment-workflow-phase-2.md
+    │   ├── answer-assessment-workflow-phase-2.md
+    │   └── answer-assessment-workflow-phase-3.md
     └── decisions/
         ├── README.md
         ├── ADR-0001-agent-development-lifecycle.md
@@ -144,16 +146,16 @@ The repository currently contains Agent-development governance, the evidence/con
         └── ADR-0004-answer-assessment-lifecycle.md
 ```
 
-There is currently one released production question-generation prompt, one draft assessment prompt, one production Pi RPC question adapter, and deterministic fixtures for both evaluator seams, but no production assessment adapter, database, release publication, or CI configuration. The repository has a public README and an installable local Pi package manifest. The package has one Pi-provided peer dependency and three exact development dependencies; it has no third-party runtime npm dependency. The foreground daemon and extension form a development-ready question-generation and deterministic volatile-assessment slice, not a published release.
+There are currently two released production prompts, narrow production Pi RPC adapters for question generation and answer assessment, and deterministic fixtures for both evaluator seams, but no database, package publication, or CI configuration. The repository has a public README and an installable local Pi package manifest. The package has one Pi-provided peer dependency and three exact development dependencies; it has no third-party runtime npm dependency. The foreground daemon and extension form a development-ready volatile learning loop, not a published release.
 
 # Core Modules
 
 The implemented core modules and adapters are:
 
 - `internal/evidence`: one deep module whose `Preview` interface resolves explicit Git selections, parses zero-context diffs, maps changed lines to Go declarations, applies and retains caller-provided evidence limits, and returns stable errors plus explicit omission/truncation metadata. Its pure `BuildBundle` interface accepts only that bounded result and produces deterministic `E001`-style citations, content hashes, exact byte counts, copied coverage metadata, and a content-addressed manifest without reading more source or exposing the absolute repository root. Tests exercise both the in-memory seam and real temporary Git repositories rather than an invented Git port.
-- `internal/evaluator`: a provider-independent boundary. `NewInput` validates a complete `evidence.Bundle` and owns a JSON-safe copy without a repository root; `ParseQuestionSet` accepts only one bounded strict JSON object with fixed Q1/Q2/Q3 kinds and valid bundle references; `QuestionEvaluator` accepts only that input plus validated non-secret model metadata. `PiRPCEvaluator` freezes a symlink-resolved `pi` path after an exact startup version preflight, starts one isolated process without a shell, disables retries/compaction and every discovered capability, sends one LF-framed input, waits for `agent_settled`, validates one final assistant text, applies fixed stream/deadline bounds, and always terminates/reaps the child. The assessment side owns validated evidence, questions, exactly three bounded answers, and at most one F1 exchange through `AssessmentInput`; `ParseAssessmentTurn` permits exactly one initial follow-up or three ordered verdicts and validates every reference; `DeriveAssessmentLabel` maps verdicts deterministically. `AssessmentEvaluator` currently has only a deterministic test adapter and no production entry point.
+- `internal/evaluator`: a provider-independent boundary. `NewInput` validates a complete `evidence.Bundle` and owns a JSON-safe copy without a repository root; `ParseQuestionSet` accepts only one bounded strict JSON object with fixed Q1/Q2/Q3 kinds and valid bundle references; `QuestionEvaluator` accepts only that input plus validated non-secret model metadata. `PiRPCEvaluator` freezes a symlink-resolved `pi` path after an exact startup version preflight, starts one isolated process without a shell, disables retries/compaction and every discovered capability, sends one LF-framed input, waits for `agent_settled`, validates one final assistant text, applies fixed stream/deadline bounds, and always terminates/reaps the child. The assessment side owns validated evidence, questions, exactly three bounded answers, and at most one F1 exchange through `AssessmentInput`; `ParseAssessmentTurn` permits exactly one initial follow-up or three ordered verdicts and validates every reference; `DeriveAssessmentLabel` maps verdicts deterministically. `PiRPCAssessmentEvaluator` implements the separate narrow assessment seam while reusing only the package-private RPC lifecycle; every initial or F1 turn gets a new terminated and reaped process.
 - `internal/assessment`: the volatile answer-lifecycle module. `Start`, `Submit`, and `Close` own validated evaluator values, a fixed model selection, cryptographic instance-local capabilities, 30-minute expiry, eight-entry/1-MiB capacity, atomic initial/F1 transitions, failure invalidation, cleanup, and deterministic label derivation. It accepts no repository path, client-supplied evidence/questions/model, credential, prompt, or executable path.
-- `internal/daemon`: one deep local-runtime module whose `Run` interface owns protected runtime discovery, per-start Instance Tokens, single-instance locking, loopback HTTP lifecycle, strict protocol decoding, stable error translation, graceful shutdown, and in-memory continuation and assessment services. Preview may retain an owned copy for five minutes under fixed 8-entry/1-MiB limits; `/v1/question-sets` atomically consumes it before `BuildBundle` and evaluation, then additively reports assessment availability. `/v1/assessment-turns` accepts only the opaque ID and strict stage-specific answer fields. Production constructs the service without an assessment evaluator until Phase 3, so it retains no assessment and returns no deterministic fallback.
+- `internal/daemon`: one deep local-runtime module whose `Run` interface owns protected runtime discovery, per-start Instance Tokens, single-instance locking, loopback HTTP lifecycle, strict protocol decoding, stable error translation, graceful shutdown, and in-memory continuation and assessment services. Preview may retain an owned copy for five minutes under fixed 8-entry/1-MiB limits; `/v1/question-sets` atomically consumes it before `BuildBundle` and evaluation, then additively reports assessment availability. `/v1/assessment-turns` accepts only the opaque ID and strict stage-specific answer fields. Production constructs both isolated Pi adapters at startup and never substitutes deterministic fixtures when either adapter is unavailable.
 - `cmd/pi-learnloop`: the minimal public executable adapter. It accepts only `pi-learnloop daemon`, installs `SIGINT`/`SIGTERM` cancellation, and exposes no flags that weaken accepted security defaults.
 - `extensions/lib/daemon-client.ts`: one deep local client module whose preview, question, and assessment interfaces hide protected runtime-file validation, exact loopback URL validation, instance verification, proxy-independent HTTP, Instance Token authentication, bounded response decoding, and v1 schema validation. Preview discovery races retry once; question and assessment submissions never retry.
 - `extensions/lib/learn-command.ts`: the `/learn` interaction module. It accepts only explicit supported selections, renders files, symbols, byte volume and truncation before evaluation, validates active Pi model metadata, requires explicit sharing/cost confirmations, collects exactly Q1/Q2/Q3 and at most one F1, and renders daemon-validated feedback plus the Go-derived label without starting an Agent turn.
@@ -165,10 +167,9 @@ The remaining target architecture identifies these unimplemented responsibilitie
 - Later daemon capabilities: SSE event delivery, durable worker coordination, and learning lifecycle management beyond the implemented evidence-preview request.
 - Changeset capture: association among repositories, Pi Sessions, commits, and working-tree changes.
 - Go evidence enrichment: type/dependency analysis and any expansion beyond the bytes represented in the current preview. The syntax-level evaluator-ready bundle is product-connected, but evidence expansion remains out of scope.
-- Assessment product flow beyond Phase 2: the production isolated Pi evaluator, released embedded assessment prompt, and fake-process verification remain unimplemented.
 - Persistence: SQLite migrations, durable jobs, leases, event cursors, concepts, questions, and answers.
 
-`TODO / Need Confirmation`: assign production assessment-adapter and persistence paths only through their approved implementation phases.
+`TODO / Need Confirmation`: assign persistence paths only through a separately approved implementation plan.
 
 # High-Level Architecture
 
@@ -187,9 +188,9 @@ internal/daemon
     │                              → isolated no-session/no-tools Pi RPC process
     └── assessment capability      → internal/assessment
                                    → internal/evaluator assessment path
-                                   → deterministic test adapter only
+                                   → fresh isolated no-session/no-tools Pi RPC process
 
-Production assessment adapter and SQLite jobs (planned)
+SQLite jobs and durable learning history (planned)
 ```
 
 `internal/evidence.BuildBundle` and `internal/evaluator.NewInput` are connected only after an atomic continuation consume. They deliberately have no repository path or context parameter, so they cannot read additional content after the user-visible preview. The runtime input and strict question result are versioned evaluator contracts, not daemon HTTP or persisted formats.
@@ -218,20 +219,20 @@ Implemented daemon flow:
 7. Authenticated `POST /v1/question-sets` strictly validates a 4-KiB request, atomically consumes the continuation, builds the bundle from that exact value without repository access, and starts one frozen Pi 0.84.3 RPC executable directly without a shell. Concurrent, expired, used, malformed, wrong-instance, and post-restart IDs share `409 continuation_unavailable`.
 8. The adapter uses the embedded released prompt and fixed deny arguments, disables Agent retry and auto-compaction through correlated commands, requires an empty discovered-command list, sends exactly one LF-framed runtime input, rejects tools and unexpected events, waits for `agent_settled`, and validates one final assistant text. It enforces a 120-second deadline, 2-MiB stdout, 64-KiB stderr, and 64-KiB final-text limits, then terminates and reaps the child.
 9. The strict result is exactly Q1/Q2 `code_specific` plus Q3 `go_backend`, or `insufficient_evidence`; the extension validates and renders it. The client and daemon never retry the continuation or evaluator call.
-10. A successful question result additively reports an assessment descriptor. With an internal assessment evaluator, the daemon retains an owned exact context for thirty minutes under eight-entry/1-MiB limits; production currently returns `evaluator_unavailable` and retains nothing.
-11. The extension can collect exactly three bounded answers, confirm evidence/answer sharing and possible cost, submit once, render at most one F1, submit its answer once, and display three verdicts plus the Go-derived label. The strict route accepts no source, questions, model, prompt, path, credential, or label from the client and never retries.
+10. A successful question result additively reports an assessment descriptor and retains an owned exact context for thirty minutes under eight-entry/1-MiB limits when the production assessment adapter passed startup preflight.
+11. The extension collects exactly three bounded answers, confirms evidence/answer sharing and possible cost, and submits once. The daemon starts a fresh isolated Pi assessment process with the fixed model and released prompt, then returns either complete Q1/Q2/Q3 verdicts or one F1. An answered F1 starts one final fresh process; a second follow-up is rejected. The strict route accepts no source, questions, model, prompt, path, credential, or label from the client and never retries.
 12. Cancellation reaches Git and evaluator subprocesses; `SIGINT` or `SIGTERM` triggers bounded graceful shutdown, in-memory continuation and assessment cleanup, and instance-aware runtime-file cleanup.
 
-Target end-to-end flow beyond the completed question-generation slice:
+Current volatile end-to-end flow and the remaining durable step:
 
 1. The user manually invokes `/learn`; there is no automatic reminder or background Session indexing.
 2. The user explicitly selects a Git changeset, or later an unreviewed Session after that capability is designed.
 3. The implemented extension and daemon produce the bounded, inspectable evidence preview and explicit continuation.
 4. The implemented isolated Pi RPC adapter generates and validates the initial three questions from the exact retained evidence.
 5. The implemented volatile module owns the exact evaluator input, fixed question set, fixed model selection, three bounded answers, and at most one F1 exchange without repository roots or credentials.
-6. The implemented Pi UI collects answers and drives the strict authenticated stages; deterministic adapters exercise complete and follow-up paths without a provider.
+6. The implemented Pi UI collects answers and drives the strict authenticated stages; the production assessment adapter starts one isolated process per turn, while deterministic adapters exercise complete and follow-up paths without a provider.
 7. The strict result contract accepts three evidence-backed verdicts, and Go derives `understood`, `partial`, or `review_needed` deterministically.
-8. Phase 3 will add the isolated production Pi assessment process. Durable storage of the repository-scoped result remains a separate future plan.
+8. Durable storage of the repository-scoped result remains a separate future plan.
 
 # External Dependencies
 
@@ -259,7 +260,7 @@ Planned integrations:
 - SQLite accessed by the Go service.
 - Go analysis packages required by the approved implementation.
 
-Future SQLite, evaluator, or Go-analysis dependencies remain `TODO / Need Confirmation` until introduced through separately approved plans.
+Future SQLite or Go-analysis dependencies remain `TODO / Need Confirmation` until introduced through separately approved plans.
 
 # Engineering Constraints
 
@@ -331,7 +332,7 @@ Current Go evidence tests cover commit ranges, working-tree and untracked files,
 
 Current daemon integration tests cover loopback discovery, preflight-before-discovery publication, commit-range and working-tree previews through real Git repositories, fixed evidence caps, token authentication, Host/Origin/CORS defenses, strict JSON, size and media-type limits, stable safe errors, single-instance locking, runtime permissions, symlink rejection, token rotation, stale-state replacement, cancellation propagation, and shutdown cleanup. Continuation tests cover exact retained working-tree evidence after the source is changed, five-minute expiry, count/byte capacity, owned copies, single and concurrent consume, strict question requests, protected routing, empty evidence, and restart loss. Daemon tests install a fake Pi executable and never call a provider. Command tests verify that no unsupported security-weakening arguments are accepted.
 
-Assessment service and route tests cover owned copies, thirty-minute expiry, count/byte capacity without live eviction, cleanup, strict stage fields, malformed and replayed IDs, invalid submissions without state mutation, atomic concurrent consume, evaluator failure invalidation, one F1, final label mapping, and the absence of a production deterministic fallback.
+Assessment service and route tests cover owned copies, thirty-minute expiry, count/byte capacity without live eviction, cleanup, strict stage fields, malformed and replayed IDs, invalid submissions without state mutation, atomic concurrent consume, evaluator failure invalidation, one F1, final label mapping, and the absence of a production deterministic fallback. Assessment fake-Pi tests additionally cover exact initial/follow-up inputs, a fresh process per turn, response correlation, strict schema/reference failures, isolation-event rejection, timeout, cancellation, stream/output caps, early exit, opaque errors, and process reaping; daemon integration verifies production composition without a provider.
 
 Current extension tests cover manual command registration, explicit commit-range and working-tree selections, trust/UI/input gates, empty previews, approximate UTF-8 excerpt volume, truncation display, recoverable errors, protected discovery paths, exact IPv4-loopback descriptor validation, status-before-token ordering, environment-proxy bypass, authenticated requests, one preview discovery retry, stable daemon error propagation, response limits, and v1 success-schema validation. Post-preview tests cover decline-without-request, question and answer sharing/cost/retry disclosure, missing model metadata, exact model propagation, three-question rendering, assessment descriptors, exact answer payloads, cancellation before submission, unavailable assessment handling, one F1, final-result rendering, malformed-result rejection, and zero continuation or assessment retries.
 
@@ -352,11 +353,11 @@ The remaining target strategy includes:
 - The Pi extension and RPC APIs may evolve; isolate them behind narrow adapters.
 - Pi 0.84.3's published declaration graph contains upstream type-resolution errors under full library checking, so this project uses `skipLibCheck` while retaining strict checking for its own TypeScript sources.
 - LLM evaluation can be inconsistent; require structured output, code evidence, and repeatable fixtures.
-- Answer assessment remains unavailable in production until the isolated Pi adapter Phase 3 is explicitly authorized and completed; the implemented deterministic adapter must never become a production fallback.
+- Deterministic evaluator adapters are test fixtures and must never become production fallbacks.
 - The capability policy is a required development contract, not runtime enforcement; future adapters must prove enforcement through implementation tests.
 - Mapping multiple Sessions to one changeset can be ambiguous; selection must remain explicit and inspectable.
 - Source code privacy depends on evidence minimization, repository ignore rules, and a clear pre-evaluation preview.
-- Production question generation depends on exactly Pi 0.84.3 being visible on the daemon startup `PATH`; unavailable or mismatched Pi leaves preview operational but disables continuation.
+- Production question generation and answer assessment depend on exactly Pi 0.84.3 being visible on the daemon startup `PATH`; unavailable or mismatched Pi leaves preview operational but disables the corresponding evaluator capability.
 - Pi LearnLoop disables Agent retry and auto-compaction and performs no product retry. Pi/provider transport configuration remains external; the supported configuration requires `retry.provider.maxRetries` to stay `0` because RPC cannot enforce it.
 - A durable SQLite worker queue can become unnecessary complexity if the state machine is not kept small.
 - Syntax parsing does not yet provide type or dependency information, and deletion-only hunks are reported explicitly rather than reconstructed from the base-side declaration.

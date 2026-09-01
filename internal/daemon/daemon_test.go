@@ -699,6 +699,7 @@ func TestDaemonPiHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 
+	lastAssistantText := `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"What behavior changed?","evidence_references":["E001"]},{"id":"Q2","kind":"code_specific","text":"Which boundary matters?","evidence_references":["E001"]},{"id":"Q3","kind":"go_backend","text":"How would a Go test cover this?","evidence_references":[]}]}`
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -715,14 +716,20 @@ func TestDaemonPiHelperProcess(t *testing.T) {
 		case "set_auto_retry", "set_auto_compaction", "prompt":
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true})
 			if kind == "prompt" {
+				message, _ := command["message"].(string)
+				var envelope map[string]json.RawMessage
+				if json.Unmarshal([]byte(message), &envelope) == nil {
+					if _, isAssessment := envelope["stage"]; isAssessment {
+						lastAssistantText = `{"schema_version":1,"disposition":"complete","follow_up":null,"evaluations":[{"question_id":"Q1","verdict":"demonstrated","feedback":"The answer identifies the selected behavior.","evidence_references":["E001"]},{"question_id":"Q2","verdict":"partial","feedback":"The answer omits one selected edge path.","evidence_references":["E001"]},{"question_id":"Q3","verdict":"not_demonstrated","feedback":"The answer needs a clearer testing explanation.","evidence_references":[]}]}`
+					}
+				}
 				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "agent_start"})
 				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "agent_settled"})
 			}
 		case "get_commands":
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"commands": []any{}}})
 		case "get_last_assistant_text":
-			questionSet := `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"What behavior changed?","evidence_references":["E001"]},{"id":"Q2","kind":"code_specific","text":"Which boundary matters?","evidence_references":["E001"]},{"id":"Q3","kind":"go_backend","text":"How would a Go test cover this?","evidence_references":[]}]}`
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"text": questionSet}})
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"text": lastAssistantText}})
 		default:
 			os.Exit(92)
 		}
@@ -733,7 +740,7 @@ func installDaemonFakePi(t *testing.T) {
 	t.Helper()
 	binDirectory := t.TempDir()
 	fakePi := filepath.Join(binDirectory, "pi")
-	script := fmt.Sprintf("#!/bin/sh\nexec %q -test.run '^TestDaemonPiHelperProcess$' -- \"$@\"\n", os.Args[0])
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '0.84.3\\n'; exit 0; fi\nexec %q -test.run '^TestDaemonPiHelperProcess$' -- \"$@\"\n", os.Args[0])
 	if err := os.WriteFile(fakePi, []byte(script), 0o700); err != nil {
 		t.Fatalf("WriteFile(fake Pi): %v", err)
 	}

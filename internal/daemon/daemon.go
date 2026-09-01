@@ -49,8 +49,12 @@ func Run(ctx context.Context, config Config) error {
 	}
 	defer lock.release()
 	var questionEvaluator evaluator.QuestionEvaluator
+	var assessmentEvaluator evaluator.AssessmentEvaluator
 	if piEvaluator, err := evaluator.NewPiRPCEvaluator(ctx, prompts.EvaluatorQuestionGenerationV1()); err == nil {
 		questionEvaluator = piEvaluator
+	}
+	if piEvaluator, err := evaluator.NewPiRPCAssessmentEvaluator(ctx, prompts.EvaluatorAnswerAssessmentV1()); err == nil {
+		assessmentEvaluator = piEvaluator
 	}
 
 	instanceID, err := randomID(16)
@@ -86,7 +90,7 @@ func Run(ctx context.Context, config Config) error {
 	defer removeRuntimeFiles(stateDir, instanceID)
 	continuations := newContinuationStore()
 	defer continuations.clear()
-	assessments := assessment.New(nil)
+	assessments := assessment.New(assessmentEvaluator)
 	defer assessments.Close()
 
 	server := &http.Server{

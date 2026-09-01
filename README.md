@@ -1,6 +1,6 @@
 # Pi LearnLoop
 
-Pi LearnLoop is a local learning companion for Go developers who use the Pi coding agent. Its current production slice lets you manually choose a Git changeset with `/learn`, inspect the changed-Go evidence, explicitly approve sending only those excerpts to your configured model, and receive three evidence-backed learning questions. A bounded answer-assessment lifecycle and its Pi UI are implemented and deterministically tested, but the production assessment model adapter remains deliberately unavailable until the separately authorized Phase 3.
+Pi LearnLoop is a local learning companion for Go developers who use the Pi coding agent. Its current production slice lets you manually choose a Git changeset with `/learn`, inspect the changed-Go evidence, explicitly approve sending only those excerpts to your configured model, answer three evidence-backed learning questions, and receive concise per-question feedback plus a deterministic repository-scoped label.
 
 ## Current Status
 
@@ -15,16 +15,16 @@ Implemented:
 - an explicit confirmation step before the retained evidence is consumed;
 - a 30-minute, eight-entry, 1-MiB bounded in-memory assessment state machine with atomic initial/F1 submission and deterministic Go label aggregation;
 - an additive assessment descriptor, strict authenticated `/v1/assessment-turns` route, and thin answer/F1/result UI with no client retries;
-- deterministic service, protocol, concurrency, cancellation, and extension tests for the complete volatile answer flow. The production daemon advertises `evaluator_unavailable` instead of using the deterministic test adapter as a fallback.
+- a released embedded assessment prompt and production Pi 0.84.3 RPC adapter that starts a fresh isolated process for the initial assessment and, when requested, one F1 assessment;
+- deterministic service, protocol, concurrency, cancellation, extension, and fake-process tests for the complete volatile answer flow.
 
 Not implemented:
 
-- the production isolated Pi RPC adapter for answer assessment and release of the draft assessment prompt;
 - learning-history persistence or SQLite;
 - SSE, background jobs, Session indexing, or automatic reminders;
 - npm publication or release automation.
 
-The preview half of `/learn` never contacts a model provider. After confirmation, the daemon consumes the reviewed continuation once and starts a separate no-session, no-tools Pi RPC process using the active model. The evaluator result and source-bearing RPC streams remain in memory and no learning record is saved. In the current production build, the returned questions explicitly report that answer assessment is unavailable; no deterministic result is fabricated and no answer-assessment model call can occur before Phase 3.
+The preview half of `/learn` never contacts a model provider. After confirmation, the daemon consumes the reviewed continuation once and starts a separate no-session, no-tools Pi RPC process using the active model. Successful questions retain the exact validated input in bounded daemon memory so the user can submit Q1/Q2/Q3 answers. The initial assessment starts a new isolated Pi process; one answered F1 may start one final isolated process. Source-bearing inputs, answers, evaluator output, and RPC streams remain in memory, and no learning record is saved.
 
 ## Requirements
 
@@ -72,7 +72,9 @@ Automated tests always use a fake Pi executable and never contact a provider. A 
 1. Use a synthetic or otherwise safe repository and review the selected excerpts in the `/learn` preview.
 2. Confirm that `pi --version` is exactly `0.84.3`, the intended model is active, Pi credentials are configured, and `retry.provider.maxRetries` remains `0`.
 3. Start the daemon, load the extension, invoke `/learn`, and confirm only after reviewing the preview.
-4. Verify that the command returns exactly two code-specific questions and one Go/backend question, then stop. No automated command in this repository performs this live step.
+4. Verify that the command returns exactly two code-specific questions and one Go/backend question.
+5. To smoke-test assessment, enter Q1/Q2/Q3 answers and approve the second disclosure. This resends the same selected excerpts together with the answers and incurs one additional model call. If F1 is returned, answering it resends the retained assessment context and may incur one more call, for at most two assessment calls beyond question generation.
+6. Verify either one F1 followed by a complete result or an immediate complete result with three verdicts and one derived label. No automated command in this repository performs this live step.
 
 For a persistent local installation, Pi can load the package directly from the checkout:
 
@@ -90,9 +92,9 @@ The package has no third-party runtime npm dependency. `@earendil-works/pi-codin
 - `/learn` submits the trusted Pi working directory and the explicit Git selection. It does not send Pi credentials.
 - A successful preview may retain only its bounded evidence in daemon memory for five minutes. The opaque continuation is single-use, has fixed count and byte limits, and is removed on expiry or daemon shutdown.
 - Confirmation sends only the opaque continuation ID and non-secret active model identifiers to the daemon. The daemon builds the evaluator input from the exact retained preview without rereading the repository.
-- When an assessment evaluator is explicitly supplied through the internal seam, successful questions may retain that exact validated input for at most thirty minutes under an eight-entry/1-MiB cap. Initial answers and F1 are bounded to 4 KiB each, submissions are atomically single-consume, and completed, failed, expired, or concurrent IDs share a non-retryable unavailable result.
-- Assessment state, source, answers, prompts, model output, and feedback are never persisted or logged. The production daemon currently retains no assessment because its Phase 3 adapter is absent.
-- Production evaluation starts the frozen, symlink-resolved Pi 0.84.3 executable directly without a shell. Sessions, tools, extensions, skills, prompt templates, themes, context files, and project approval are disabled.
+- Successful production questions may retain their exact validated input for at most thirty minutes under an eight-entry/1-MiB cap. Initial answers and F1 are bounded to 4 KiB each, submissions are atomically single-consume, and completed, failed, expired, or concurrent IDs share a non-retryable unavailable result.
+- Assessment state, source, answers, prompts, model output, and feedback are never persisted or logged.
+- Production question generation and every assessment turn start a frozen, symlink-resolved Pi 0.84.3 executable directly without a shell. Sessions, tools, extensions, skills, prompt templates, themes, context files, and project approval are disabled.
 - Only the selected excerpts and non-secret bundle provenance enter the Pi-managed model request. Credentials never enter HTTP, argv, prompts, logs, persisted records, or model-visible content.
 - RPC runtime, stdout, stderr, and final output are bounded; malformed output, discovered commands, tool events, retries, compaction, timeout, cancellation, or child failure fail closed. The child is always terminated and reaped.
 

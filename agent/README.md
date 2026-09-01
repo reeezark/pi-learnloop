@@ -18,7 +18,7 @@ Every evaluator adapter must follow this sequence:
 4. Record versions, hashes, decisions, and privacy flags using `schemas/run-record.schema.json`.
 5. Run `scripts/validate-agent-infra.sh`.
 
-The question-generation seam has deterministic and isolated Pi RPC adapters. The answer-assessment seam currently has strict runtime contracts and a deterministic test adapter only; production Pi invocation is deferred to the separately authorized Phase 3.
+The question-generation and answer-assessment seams each have a narrow deterministic test adapter and a production isolated Pi RPC adapter. The two production adapters share only private process-isolation mechanics and never retain a Pi process across human input.
 
 ## Authoritative Assets
 
@@ -28,7 +28,7 @@ The question-generation seam has deterministic and isolated Pi RPC adapters. The
 | Eval-case schema | `eval-case-schema` | `1.0.0` | Development fixture format |
 | Run-record schema | `run-record-schema` | `1.0.0` | Privacy-safe execution provenance |
 | Question prompt | `evaluator-question-generation` | `1.0.0` | Strict, evidence-grounded three-question generation |
-| Assessment prompt (draft) | `evaluator-answer-assessment` | `1.0.0` | Review-only rubric for one optional follow-up and three final verdicts |
+| Assessment prompt | `evaluator-answer-assessment` | `1.0.0` | Released rubric for one optional follow-up and three final verdicts |
 
 The runtime schema identifiers `evaluator-input@1`, `evaluator-question-set@1`, `evaluator-assessment-input@1`, and `evaluator-assessment-turn@1` are implemented by `internal/evaluator/`. They are intentionally distinct from the development fixture schemas in this directory.
 

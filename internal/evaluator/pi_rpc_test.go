@@ -275,6 +275,7 @@ type fakePi struct {
 	argumentsPath string
 	commandsPath  string
 	pidPath       string
+	startsPath    string
 }
 
 func installFakePi(t *testing.T, scenario string) fakePi {
@@ -282,7 +283,11 @@ func installFakePi(t *testing.T, scenario string) fakePi {
 	realDirectory := t.TempDir()
 	binDirectory := t.TempDir()
 	realExecutable := filepath.Join(realDirectory, "pi-real")
-	script := fmt.Sprintf("#!/bin/sh\nexec %q -test.run '^TestPiRPCHelperProcess$' -- \"$@\"\n", os.Args[0])
+	version := SupportedPiVersion
+	if scenario == "wrong_version" {
+		version = "0.84.4"
+	}
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%%s\\n' %q; exit 0; fi\nexec %q -test.run '^TestPiRPCHelperProcess$' -- \"$@\"\n", version, os.Args[0])
 	if err := os.WriteFile(realExecutable, []byte(script), 0o700); err != nil {
 		t.Fatalf("WriteFile(fake Pi): %v", err)
 	}
@@ -296,6 +301,7 @@ func installFakePi(t *testing.T, scenario string) fakePi {
 		argumentsPath: filepath.Join(recordDirectory, "arguments.json"),
 		commandsPath:  filepath.Join(recordDirectory, "commands.jsonl"),
 		pidPath:       filepath.Join(recordDirectory, "pid"),
+		startsPath:    filepath.Join(recordDirectory, "starts"),
 	}
 	t.Setenv("PATH", binDirectory)
 	t.Setenv("PI_LEARNLOOP_FAKE_RPC", "1")
@@ -303,6 +309,7 @@ func installFakePi(t *testing.T, scenario string) fakePi {
 	t.Setenv("PI_LEARNLOOP_FAKE_ARGUMENTS", fake.argumentsPath)
 	t.Setenv("PI_LEARNLOOP_FAKE_COMMANDS", fake.commandsPath)
 	t.Setenv("PI_LEARNLOOP_FAKE_PID", fake.pidPath)
+	t.Setenv("PI_LEARNLOOP_FAKE_STARTS", fake.startsPath)
 	return fake
 }
 
@@ -325,6 +332,9 @@ func runFakePiProcess(arguments []string) int {
 		}
 		return 0
 	}
+	if err := appendFakeStart(); err != nil {
+		return 90
+	}
 	if err := os.WriteFile(os.Getenv("PI_LEARNLOOP_FAKE_PID"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		return 91
 	}
@@ -343,6 +353,7 @@ func runFakePiProcess(arguments []string) int {
 		return 17
 	}
 
+	lastAssistantText := syntheticQuestionSetJSON()
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		line, err := reader.ReadString('\n')
@@ -389,6 +400,8 @@ func runFakePiProcess(arguments []string) int {
 				time.Sleep(time.Hour)
 			}
 			writeFakeJSON(map[string]any{"id": id, "type": "response", "command": kind, "success": true})
+			message, _ := command["message"].(string)
+			lastAssistantText = fakeAssistantText(scenario, message)
 			writeFakeJSON(map[string]any{"type": "agent_start"})
 			writeFakeJSON(map[string]any{"type": "message_update", "assistantMessageEvent": map[string]any{"type": "start"}})
 			switch scenario {
@@ -406,13 +419,13 @@ func runFakePiProcess(arguments []string) int {
 					"reason": "stop",
 					"message": map[string]any{
 						"role":    "assistant",
-						"content": []any{map[string]any{"type": "text", "text": syntheticQuestionSetJSON()}},
+						"content": []any{map[string]any{"type": "text", "text": lastAssistantText}},
 					},
 				},
 			})
 			writeFakeJSON(map[string]any{"type": "agent_settled"})
 		case "get_last_assistant_text":
-			text := syntheticQuestionSetJSON()
+			text := lastAssistantText
 			if scenario == "invalid_output" {
 				text = "not-json"
 			}
@@ -420,6 +433,34 @@ func runFakePiProcess(arguments []string) int {
 		default:
 			return 96
 		}
+	}
+}
+
+func fakeAssistantText(scenario, message string) string {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal([]byte(message), &envelope) != nil {
+		return syntheticQuestionSetJSON()
+	}
+	var stage AssessmentStage
+	if raw, exists := envelope["stage"]; !exists || json.Unmarshal(raw, &stage) != nil {
+		return syntheticQuestionSetJSON()
+	}
+	switch scenario {
+	case "assessment_follow_up":
+		if stage == AssessmentStageInitialAnswers {
+			return syntheticAssessmentFollowUpJSON()
+		}
+		return syntheticAssessmentCompleteJSON()
+	case "assessment_invalid_output":
+		return "not-json"
+	case "assessment_invalid_schema":
+		return strings.TrimSuffix(syntheticAssessmentCompleteJSON(), "}") + `,"score":100}`
+	case "assessment_unknown_reference":
+		return strings.Replace(syntheticAssessmentCompleteJSON(), `"E001"`, `"E999"`, 1)
+	case "assessment_oversized_output":
+		return strings.Repeat("x", MaxAssessmentTurnBytes+1)
+	default:
+		return syntheticAssessmentCompleteJSON()
 	}
 }
 
@@ -439,6 +480,16 @@ func appendFakeCommand(line string) error {
 	}
 	defer file.Close()
 	_, err = fmt.Fprintln(file, line)
+	return err
+}
+
+func appendFakeStart() error {
+	file, err := os.OpenFile(os.Getenv("PI_LEARNLOOP_FAKE_STARTS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = fmt.Fprintln(file, os.Getpid())
 	return err
 }
 
@@ -466,6 +517,14 @@ func syntheticModelSelection() ModelSelection {
 
 func syntheticQuestionSetJSON() string {
 	return `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"What behavior changed?","evidence_references":["E001"]},{"id":"Q2","kind":"code_specific","text":"Which boundary matters?","evidence_references":["E001"]},{"id":"Q3","kind":"go_backend","text":"How would a Go test cover this?","evidence_references":[]}]}`
+}
+
+func syntheticAssessmentFollowUpJSON() string {
+	return `{"schema_version":1,"disposition":"follow_up","follow_up":{"id":"F1","target_question_id":"Q1","text":"Which exact branch supports your first answer?","evidence_references":["E001"]},"evaluations":[]}`
+}
+
+func syntheticAssessmentCompleteJSON() string {
+	return `{"schema_version":1,"disposition":"complete","follow_up":null,"evaluations":[{"question_id":"Q1","verdict":"demonstrated","feedback":"The answer identifies the selected behavior.","evidence_references":["E001"]},{"question_id":"Q2","verdict":"partial","feedback":"The answer omits one selected edge path.","evidence_references":["E001"]},{"question_id":"Q3","verdict":"not_demonstrated","feedback":"The answer needs a clearer testing explanation.","evidence_references":[]}]}`
 }
 
 func readFakeArguments(t *testing.T, path string) []string {

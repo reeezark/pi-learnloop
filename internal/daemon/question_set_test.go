@@ -93,6 +93,59 @@ func TestQuestionSetConsumesExactWorkingTreePreviewOnce(t *testing.T) {
 	assertErrorCode(t, second.Body, "continuation_unavailable")
 }
 
+func TestProductionDaemonCompletesAssessmentThroughPiRPC(t *testing.T) {
+	stateDir, descriptor := startDaemon(t)
+	token := string(waitForFile(t, filepath.Join(stateDir, "daemon.token")))
+	repository, base, head := changedRepository(t)
+	continuation := requestPreviewContinuation(t, descriptor.BaseURL, token, repository, `{"kind":"commit_range","base":`+quoted(base)+`,"head":`+quoted(head)+`}`)
+
+	questionResponse := postQuestionSet(t, descriptor.BaseURL, token, validQuestionRequest(continuation.ID))
+	defer questionResponse.Body.Close()
+	if questionResponse.StatusCode != http.StatusOK {
+		content, _ := io.ReadAll(questionResponse.Body)
+		t.Fatalf("POST /v1/question-sets status = %d, want 200; body = %s", questionResponse.StatusCode, content)
+	}
+	var questionResult struct {
+		Assessment struct {
+			Available bool   `json:"available"`
+			ID        string `json:"id"`
+		} `json:"assessment"`
+	}
+	if err := json.NewDecoder(questionResponse.Body).Decode(&questionResult); err != nil {
+		t.Fatalf("decode question response: %v", err)
+	}
+	if !questionResult.Assessment.Available || !strings.HasPrefix(questionResult.Assessment.ID, "as1-") {
+		t.Fatalf("assessment = %#v, want available production descriptor", questionResult.Assessment)
+	}
+
+	body := []byte(`{"assessment_id":` + quoted(questionResult.Assessment.ID) + `,"stage":"initial_answers","answers":[{"question_id":"Q1","text":"first answer"},{"question_id":"Q2","text":"second answer"},{"question_id":"Q3","text":"third answer"}]}`)
+	request, err := http.NewRequest(http.MethodPost, descriptor.BaseURL+"/v1/assessment-turns", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest(assessment): %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "PiLearnLoop "+token)
+	assessmentResponse, err := localHTTPClient().Do(request)
+	if err != nil {
+		t.Fatalf("POST /v1/assessment-turns: %v", err)
+	}
+	defer assessmentResponse.Body.Close()
+	if assessmentResponse.StatusCode != http.StatusOK {
+		content, _ := io.ReadAll(assessmentResponse.Body)
+		t.Fatalf("POST /v1/assessment-turns status = %d, want 200; body = %s", assessmentResponse.StatusCode, content)
+	}
+	var assessmentResult struct {
+		Turn  evaluator.AssessmentTurn  `json:"assessment_turn"`
+		Label evaluator.AssessmentLabel `json:"label"`
+	}
+	if err := json.NewDecoder(assessmentResponse.Body).Decode(&assessmentResult); err != nil {
+		t.Fatalf("decode assessment response: %v", err)
+	}
+	if assessmentResult.Turn.Disposition != evaluator.AssessmentDispositionComplete || assessmentResult.Label != evaluator.AssessmentLabelPartial {
+		t.Fatalf("assessment result = %#v, want complete partial", assessmentResult)
+	}
+}
+
 func TestQuestionSetConcurrentConsumeStartsOneEvaluation(t *testing.T) {
 	stateDir, descriptor := startDaemon(t)
 	token := string(waitForFile(t, filepath.Join(stateDir, "daemon.token")))
