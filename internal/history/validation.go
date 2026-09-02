@@ -12,14 +12,16 @@ import (
 )
 
 const (
-	recordIDPrefix       = "lr1-"
-	recordIDRandomBytes  = 32
-	maxRepositoryRootLen = 4096
-	maxRevisionLen       = 256
-	maxPromptIdentityLen = 128
-	maxPromptVersionLen  = 64
-	maxProviderLen       = 128
-	maxModelIDLen        = 256
+	recordIDPrefix         = "lr1-"
+	recordIDRandomBytes    = 32
+	maxRepositoryRootLen   = 4096
+	maxRevisionLen         = 256
+	maxPromptIdentityLen   = 128
+	maxPromptVersionLen    = 64
+	maxProviderLen         = 128
+	maxModelIDLen          = 256
+	maxPiSessionIDBytes    = 128
+	maxPiSessionCandidates = 20
 )
 
 func ValidRecordID(value string) bool {
@@ -28,6 +30,24 @@ func ValidRecordID(value string) bool {
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, recordIDPrefix))
 	return err == nil && len(decoded) == recordIDRandomBytes
+}
+
+func ValidPiSessionID(value string) bool {
+	if len(value) == 0 || len(value) > maxPiSessionIDBytes ||
+		!asciiAlphaNumeric(value[0]) || !asciiAlphaNumeric(value[len(value)-1]) {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if !asciiAlphaNumeric(character) && character != '.' && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiAlphaNumeric(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9'
 }
 
 func validateStart(value Start) error {

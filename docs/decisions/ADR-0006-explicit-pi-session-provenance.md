@@ -1,6 +1,6 @@
 ---
 id: ADR-0006
-status: proposed
+status: accepted
 date: 2026-09-02
 supersedes: none
 ---
@@ -19,7 +19,7 @@ ADRs 0002–0005 already require strict authenticated local requests, exact serv
 
 ## Decision
 
-This ADR is proposed. It does not authorize an implementation phase.
+This ADR was accepted on 2026-09-02. Phase authorization remains governed separately by the task plan and `AGENTS.md`.
 
 ### 1. Associate explicitly; never infer
 

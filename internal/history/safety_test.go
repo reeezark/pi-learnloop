@@ -26,7 +26,7 @@ func TestOpenPreservesRejectedDatabase(t *testing.T) {
 				if err != nil {
 					t.Fatalf("sql.Open() error = %v", err)
 				}
-				if _, err := database.Exec("PRAGMA user_version = 2"); err != nil {
+				if _, err := database.Exec("PRAGMA user_version = 3"); err != nil {
 					database.Close()
 					t.Fatalf("set future schema version: %v", err)
 				}
@@ -275,5 +275,60 @@ func TestOpenRejectsInvalidStoredRepositoryWithoutRewriting(t *testing.T) {
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatal("Open(invalid stored repository) rewrote the database")
+	}
+}
+
+func TestOpenRejectsInvalidStoredPiSessionWithoutRewritingOrEcho(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	store, err := history.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	start := validStart(filepath.Join(t.TempDir(), "repository"))
+	recordID, err := store.CreateWithPiSession(ctx, start, "valid-session")
+	if err != nil {
+		store.Close()
+		t.Fatalf("CreateWithPiSession() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	databasePath := filepath.Join(dataDir, "history.db")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	invalid := "session/secret"
+	if _, err := database.Exec("PRAGMA ignore_check_constraints = ON"); err != nil {
+		database.Close()
+		t.Fatalf("disable check constraints: %v", err)
+	}
+	if _, err := database.Exec("UPDATE learning_attempts SET pi_session_id = ? WHERE record_id = ?", invalid, recordID); err != nil {
+		database.Close()
+		t.Fatalf("tamper Pi Session identity: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close tampered database: %v", err)
+	}
+	before, err := os.ReadFile(databasePath)
+	if err != nil {
+		t.Fatalf("ReadFile(before) error = %v", err)
+	}
+
+	store, err = history.Open(ctx, dataDir)
+	if store != nil || !errors.Is(err, history.ErrCorrupt) {
+		t.Fatalf("Open(invalid stored Pi Session) = (%v, %v), want nil ErrCorrupt", store, err)
+	}
+	if bytes.Contains([]byte(err.Error()), []byte(invalid)) {
+		t.Fatal("Open(invalid stored Pi Session) echoed the rejected ID")
+	}
+	after, err := os.ReadFile(databasePath)
+	if err != nil {
+		t.Fatalf("ReadFile(after) error = %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Open(invalid stored Pi Session) rewrote the database")
 	}
 }

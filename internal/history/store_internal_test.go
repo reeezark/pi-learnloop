@@ -29,7 +29,7 @@ func TestOpenConfiguresAndVerifiesSQLite(t *testing.T) {
 		{name: "foreign_keys", want: 1},
 		{name: "trusted_schema", want: 0},
 		{name: "busy_timeout", want: 5000},
-		{name: "user_version", want: 1},
+		{name: "user_version", want: 2},
 	}
 	for _, setting := range settings {
 		t.Run(setting.name, func(t *testing.T) {

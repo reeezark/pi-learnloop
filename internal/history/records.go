@@ -7,10 +7,22 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 func (store *Store) Create(ctx context.Context, start Start) (string, error) {
+	return store.create(ctx, start, "")
+}
+
+func (store *Store) CreateWithPiSession(ctx context.Context, start Start, piSessionID string) (string, error) {
+	if !ValidPiSessionID(piSessionID) {
+		return "", fmt.Errorf("%w: Pi Session identity is invalid", ErrInvalid)
+	}
+	return store.create(ctx, start, piSessionID)
+}
+
+func (store *Store) create(ctx context.Context, start Start, piSessionID string) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("%w: context is nil", ErrInvalid)
 	}
@@ -45,14 +57,14 @@ func (store *Store) Create(ctx context.Context, start Start) (string, error) {
 				question_schema_version, assessment_schema_version,
 				question_prompt_id, question_prompt_version, question_prompt_sha256,
 				assessment_prompt_id, assessment_prompt_version, assessment_prompt_sha256,
-				pi_version, provider, model_id, thinking_level, follow_up_used
-			) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+				pi_version, provider, model_id, thinking_level, follow_up_used, pi_session_id
+			) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULLIF(?, ''))`,
 			recordID, repositoryID, start.StartedAt.UnixMilli(),
 			start.BaseRevision, start.HeadRevision, start.EvidenceManifestSHA256,
 			start.QuestionSchemaVersion, start.AssessmentSchemaVersion,
 			start.QuestionPrompt.ID, start.QuestionPrompt.Version, start.QuestionPrompt.SHA256,
 			start.AssessmentPrompt.ID, start.AssessmentPrompt.Version, start.AssessmentPrompt.SHA256,
-			start.PiVersion, start.Provider, start.ModelID, start.ThinkingLevel)
+			start.PiVersion, start.Provider, start.ModelID, start.ThinkingLevel, piSessionID)
 		return err
 	})
 	if err != nil {
@@ -228,6 +240,65 @@ func (store *Store) List(ctx context.Context, canonicalRoot string, limit int) (
 		return nil, fmt.Errorf("query history: %w", err)
 	}
 	return records, nil
+}
+
+func (store *Store) ReviewedPiSessionIDs(ctx context.Context, canonicalRoot string, candidates []string) ([]string, error) {
+	if ctx == nil || !validCanonicalRoot(canonicalRoot) || len(candidates) < 1 || len(candidates) > maxPiSessionCandidates {
+		return nil, fmt.Errorf("%w: Pi Session review query is invalid", ErrInvalid)
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if !ValidPiSessionID(candidate) {
+			return nil, fmt.Errorf("%w: Pi Session review query is invalid", ErrInvalid)
+		}
+		if _, exists := seen[candidate]; exists {
+			return nil, fmt.Errorf("%w: Pi Session review query is invalid", ErrInvalid)
+		}
+		seen[candidate] = struct{}{}
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return nil, ErrClosed
+	}
+	placeholders := make([]string, len(candidates))
+	arguments := make([]any, 1, len(candidates)+1)
+	arguments[0] = canonicalRoot
+	for index, candidate := range candidates {
+		placeholders[index] = "?"
+		arguments = append(arguments, candidate)
+	}
+	rows, err := store.conn.QueryContext(ctx, `
+		SELECT DISTINCT a.pi_session_id
+		FROM learning_attempts a
+		JOIN repositories r ON r.id = a.repository_id
+		WHERE r.canonical_root = ? AND a.status = 'complete' AND a.pi_session_id IN (`+strings.Join(placeholders, ",")+")", arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("query reviewed Pi Sessions: %w", err)
+	}
+	defer rows.Close()
+	reviewed := make(map[string]struct{}, len(candidates))
+	for rows.Next() {
+		var piSessionID string
+		if err := rows.Scan(&piSessionID); err != nil {
+			return nil, fmt.Errorf("scan reviewed Pi Sessions: %w", err)
+		}
+		if !ValidPiSessionID(piSessionID) {
+			return nil, fmt.Errorf("%w: stored Pi Session identity is invalid", ErrCorrupt)
+		}
+		reviewed[piSessionID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query reviewed Pi Sessions: %w", err)
+	}
+	result := make([]string, 0, len(reviewed))
+	for _, candidate := range candidates {
+		if _, exists := reviewed[candidate]; exists {
+			result = append(result, candidate)
+		}
+	}
+	return result, nil
 }
 
 func (store *Store) validateStoredRecords(ctx context.Context) error {

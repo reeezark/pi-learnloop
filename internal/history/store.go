@@ -79,24 +79,31 @@ func (store *Store) initialize(ctx context.Context) error {
 	if err := checkIntegrity(ctx, store.conn); err != nil {
 		return err
 	}
-	switch version {
-	case 0:
+	if version == 0 {
 		if err := verifyEmptySchema(ctx, store.conn); err != nil {
 			return err
 		}
-		if err := applyMigrationOne(ctx, store.conn); err != nil {
+	} else if err := verifySchema(ctx, store.conn, version); err != nil {
+		return err
+	}
+	for version < currentSchemaVersion {
+		migration, ok := migrationForVersion(version + 1)
+		if !ok {
+			return fmt.Errorf("%w: schema migration %d is unavailable", ErrCorrupt, version+1)
+		}
+		if err := applyMigration(ctx, store.conn, migration); err != nil {
 			return err
 		}
-		if err := verifySchema(ctx, store.conn); err != nil {
-			return err
-		}
-	case currentSchemaVersion:
-		if err := verifySchema(ctx, store.conn); err != nil {
+		version = migration.version
+		if err := verifySchema(ctx, store.conn, version); err != nil {
 			return err
 		}
 	}
 	if err := validateStoredRepositories(ctx, store.conn); err != nil {
 		return fmt.Errorf("%w: stored repository validation failed: %v", ErrCorrupt, err)
+	}
+	if err := validateStoredPiSessionIDs(ctx, store.conn); err != nil {
+		return fmt.Errorf("%w: stored Pi Session validation failed: %v", ErrCorrupt, err)
 	}
 	if err := store.validateStoredRecords(ctx); err != nil {
 		return fmt.Errorf("%w: stored record validation failed: %v", ErrCorrupt, err)
@@ -113,6 +120,15 @@ func (store *Store) initialize(ctx context.Context) error {
 	return nil
 }
 
+func migrationForVersion(version int) (schemaMigration, bool) {
+	for _, migration := range schemaMigrations {
+		if migration.version == version {
+			return migration, true
+		}
+	}
+	return schemaMigration{}, false
+}
+
 func validateStoredRepositories(ctx context.Context, conn *sql.Conn) error {
 	rows, err := conn.QueryContext(ctx, "SELECT canonical_root, created_at_unix_ms FROM repositories")
 	if err != nil {
@@ -127,6 +143,24 @@ func validateStoredRepositories(ctx context.Context, conn *sql.Conn) error {
 		}
 		if !validCanonicalRoot(canonicalRoot) || createdAt <= 0 {
 			return fmt.Errorf("%w: stored repository is invalid", ErrInvalid)
+		}
+	}
+	return rows.Err()
+}
+
+func validateStoredPiSessionIDs(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, "SELECT pi_session_id FROM learning_attempts WHERE pi_session_id IS NOT NULL")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var piSessionID string
+		if err := rows.Scan(&piSessionID); err != nil {
+			return err
+		}
+		if !ValidPiSessionID(piSessionID) {
+			return fmt.Errorf("%w: stored Pi Session identity is invalid", ErrInvalid)
 		}
 	}
 	return rows.Err()
@@ -187,7 +221,7 @@ func configureConnection(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
-func applyMigrationOne(ctx context.Context, conn *sql.Conn) error {
+func applyMigration(ctx context.Context, conn *sql.Conn, migration schemaMigration) error {
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return fmt.Errorf("begin schema migration: %w", err)
 	}
@@ -197,48 +231,32 @@ func applyMigrationOne(ctx context.Context, conn *sql.Conn) error {
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
-	if _, err := conn.ExecContext(ctx, migrationOne); err != nil {
-		return fmt.Errorf("apply schema migration 1: %w", err)
+	if _, err := conn.ExecContext(ctx, migration.sql); err != nil {
+		return fmt.Errorf("apply schema migration %d: %w", migration.version, err)
 	}
-	if _, err := conn.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
-		return fmt.Errorf("record schema migration 1: %w", err)
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", migration.version)); err != nil {
+		return fmt.Errorf("record schema migration %d: %w", migration.version, err)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("commit schema migration 1: %w", err)
+		return fmt.Errorf("commit schema migration %d: %w", migration.version, err)
 	}
 	committed = true
 	return nil
 }
 
-func verifySchema(ctx context.Context, conn *sql.Conn) error {
+func verifySchema(ctx context.Context, conn *sql.Conn, wantVersion int) error {
 	version, err := schemaVersion(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("%w: read migrated schema version: %v", ErrCorrupt, err)
 	}
-	if version != currentSchemaVersion {
-		return fmt.Errorf("%w: got schema version %d, want %d", ErrCorrupt, version, currentSchemaVersion)
+	if version != wantVersion {
+		return fmt.Errorf("%w: got schema version %d, want %d", ErrCorrupt, version, wantVersion)
 	}
-	rows, err := conn.QueryContext(ctx, `
-		SELECT type, name, sql
-		FROM sqlite_schema
-		WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
-		ORDER BY type, name`)
+	actual, err := inspectSchema(ctx, conn)
 	if err != nil {
-		return fmt.Errorf("%w: inspect schema: %v", ErrCorrupt, err)
+		return err
 	}
-	defer rows.Close()
-	actual := make(map[string]string)
-	for rows.Next() {
-		var objectType, name, statement string
-		if err := rows.Scan(&objectType, &name, &statement); err != nil {
-			return fmt.Errorf("%w: inspect schema: %v", ErrCorrupt, err)
-		}
-		actual[objectType+":"+name] = normalizeSQL(statement)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("%w: inspect schema: %v", ErrCorrupt, err)
-	}
-	expected, err := expectedSchema()
+	expected, err := expectedSchema(ctx, wantVersion)
 	if err != nil {
 		return err
 	}
@@ -247,10 +265,34 @@ func verifySchema(ctx context.Context, conn *sql.Conn) error {
 	}
 	for key, want := range expected {
 		if got, ok := actual[key]; !ok || got != want {
-			return fmt.Errorf("%w: schema object %q does not match migration 1", ErrCorrupt, key)
+			return fmt.Errorf("%w: schema object %q does not match migration %d", ErrCorrupt, key, wantVersion)
 		}
 	}
 	return nil
+}
+
+func inspectSchema(ctx context.Context, conn *sql.Conn) (map[string]string, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT type, name, sql
+		FROM sqlite_schema
+		WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+		ORDER BY type, name`)
+	if err != nil {
+		return nil, fmt.Errorf("%w: inspect schema: %v", ErrCorrupt, err)
+	}
+	defer rows.Close()
+	actual := make(map[string]string)
+	for rows.Next() {
+		var objectType, name, statement string
+		if err := rows.Scan(&objectType, &name, &statement); err != nil {
+			return nil, fmt.Errorf("%w: inspect schema: %v", ErrCorrupt, err)
+		}
+		actual[objectType+":"+name] = normalizeSQL(statement)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: inspect schema: %v", ErrCorrupt, err)
+	}
+	return actual, nil
 }
 
 func verifyEmptySchema(ctx context.Context, conn *sql.Conn) error {
@@ -266,22 +308,27 @@ func verifyEmptySchema(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
-func expectedSchema() (map[string]string, error) {
-	expected := make(map[string]string)
-	for _, raw := range strings.Split(migrationOne, ";") {
-		statement := strings.TrimSpace(raw)
-		if statement == "" {
-			continue
-		}
-		fields := strings.Fields(statement)
-		if len(fields) < 3 || fields[0] != "CREATE" || (fields[1] != "TABLE" && fields[1] != "INDEX") {
-			return nil, fmt.Errorf("%w: migration 1 contains an unexpected statement", ErrCorrupt)
-		}
-		objectType := strings.ToLower(fields[1])
-		name := fields[2]
-		expected[objectType+":"+name] = normalizeSQL(statement)
+func expectedSchema(ctx context.Context, version int) (map[string]string, error) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, fmt.Errorf("%w: open expected schema database: %v", ErrCorrupt, err)
 	}
-	return expected, nil
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	conn, err := database.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open expected schema connection: %v", ErrCorrupt, err)
+	}
+	defer conn.Close()
+	for _, migration := range schemaMigrations {
+		if migration.version > version {
+			break
+		}
+		if _, err := conn.ExecContext(ctx, migration.sql); err != nil {
+			return nil, fmt.Errorf("%w: construct expected schema %d: %v", ErrCorrupt, version, err)
+		}
+	}
+	return inspectSchema(ctx, conn)
 }
 
 func normalizeSQL(value string) string {

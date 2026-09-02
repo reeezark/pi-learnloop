@@ -113,7 +113,7 @@ func TestSchemaAndPublicValuesContainOnlyApprovedHistoryFields(t *testing.T) {
 			"base_revision", "head_revision", "evidence_manifest_sha256", "question_schema_version", "assessment_schema_version",
 			"question_prompt_id", "question_prompt_version", "question_prompt_sha256",
 			"assessment_prompt_id", "assessment_prompt_version", "assessment_prompt_sha256",
-			"pi_version", "provider", "model_id", "thinking_level", "follow_up_used", "label",
+			"pi_version", "provider", "model_id", "thinking_level", "follow_up_used", "label", "pi_session_id",
 		},
 		"question_outcomes": {"record_id", "question_id", "question_kind", "verdict"},
 	}
@@ -157,7 +157,12 @@ func TestSchemaAndPublicValuesContainOnlyApprovedHistoryFields(t *testing.T) {
 	if err := rows.Close(); err != nil {
 		t.Fatalf("close schema query: %v", err)
 	}
-	for _, forbidden := range []string{"source_excerpt", "file_path", "question_text", "user_answer", "follow_up_text", "feedback", "prompt_body", "rpc_frame", "model_output", "credential", "instance_token", "session_transcript"} {
+	for _, forbidden := range []string{
+		"source_excerpt", "file_path", "question_text", "user_answer", "follow_up_text", "feedback",
+		"prompt_body", "rpc_frame", "model_output", "credential", "instance_token", "session_transcript",
+		"session_path", "session_cwd", "session_name", "session_timestamp", "session_message",
+		"parent_session", "session_leaf", "session_prompt", "session_answer", "session_tool", "session_summary",
+	} {
 		if strings.Contains(schema.String(), forbidden) {
 			t.Fatalf("schema contains forbidden field %q", forbidden)
 		}
@@ -171,6 +176,9 @@ func TestSchemaAndPublicValuesContainOnlyApprovedHistoryFields(t *testing.T) {
 	assertStructFields(t, history.Completion{}, []string{"FinishedAt", "Label", "Outcomes"})
 	assertStructFields(t, history.Outcome{}, []string{"QuestionID", "QuestionKind", "Verdict"})
 	assertStructFields(t, history.Failure{}, []string{"FinishedAt", "Code"})
+	assertStructFields(t, history.Record{}, []string{
+		"RecordID", "Start", "FinishedAt", "Status", "FailureCode", "FollowUpUsed", "Label", "Outcomes",
+	})
 
 	if _, err := os.Stat(filepath.Join(dataDir, "history.db")); err != nil {
 		t.Fatalf("history database missing: %v", err)
