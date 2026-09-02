@@ -25,21 +25,28 @@ import (
 )
 
 const (
-	maxRequestBytes             = 16 * 1024
-	maxQuestionSetRequestBytes  = 4 * 1024
-	maxAssessmentRequestBytes   = 16 * 1024
-	maxHistoryQueryRequestBytes = 4 * 1024
-	evidenceTimeout             = 30 * time.Second
-	evaluationTimeout           = 120 * time.Second
-	maxFiles                    = 20
-	maxDeclarations             = 100
-	maxExcerptBytes             = 128 * 1024
-	maxHistoryRecords           = 50
+	maxRequestBytes              = 16 * 1024
+	maxQuestionSetRequestBytes   = 4 * 1024
+	maxAssessmentRequestBytes    = 16 * 1024
+	maxHistoryQueryRequestBytes  = 4 * 1024
+	evidenceTimeout              = 30 * time.Second
+	evaluationTimeout            = 120 * time.Second
+	maxFiles                     = 20
+	maxDeclarations              = 100
+	maxExcerptBytes              = 128 * 1024
+	maxHistoryRecords            = 50
+	maxPiSessionReviewCandidates = 20
 )
 
 type previewRequest struct {
 	Repository string            `json:"repository"`
 	Selection  *selectionRequest `json:"selection"`
+}
+
+type piSessionPreviewRequest struct {
+	Repository  string            `json:"repository"`
+	PiSessionID string            `json:"pi_session_id"`
+	Selection   *selectionRequest `json:"selection"`
 }
 
 type selectionRequest struct {
@@ -118,6 +125,11 @@ type learningHistoryQueryRequest struct {
 	Limit      int    `json:"limit"`
 }
 
+type piSessionReviewQueryRequest struct {
+	Repository   string   `json:"repository"`
+	PiSessionIDs []string `json:"pi_session_ids"`
+}
+
 type historyPromptResponse struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
@@ -172,16 +184,93 @@ func newHandler(instanceID, authority, token string, services serverServices) ht
 			handleStatus(response, request, instanceID)
 		case "/v1/evidence-previews":
 			handleEvidencePreview(response, request, token, services)
+		case "/v1/pi-session-evidence-previews":
+			handlePiSessionEvidencePreview(response, request, token, services)
 		case "/v1/question-sets":
 			handleQuestionSet(response, request, token, services)
 		case "/v1/assessment-turns":
 			handleAssessmentTurn(response, request, token, services)
 		case "/v1/learning-history-queries":
 			handleLearningHistoryQuery(response, request, token, services)
+		case "/v1/pi-session-review-queries":
+			handlePiSessionReviewQuery(response, request, token, services)
 		default:
 			writeError(response, http.StatusNotFound, "not_found", "route not found")
 		}
 	})
+}
+
+func handlePiSessionReviewQuery(response http.ResponseWriter, request *http.Request, token string, services serverServices) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if !authorized(request, token) {
+		response.Header().Set("WWW-Authenticate", "PiLearnLoop")
+		writeError(response, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(response, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBytes)
+	content, err := io.ReadAll(request.Body)
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+			return
+		}
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	var payload piSessionReviewQueryRequest
+	if err := decodeStrictJSON(content, &payload); err != nil || !hasExactPiSessionReviewQueryFields(content) || !validPiSessionReviewQuery(payload) {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	queryCtx, cancel := context.WithTimeout(request.Context(), evidenceTimeout)
+	defer cancel()
+	canonicalRoot, err := evidence.ResolveRepositoryRoot(queryCtx, payload.Repository)
+	if err != nil {
+		writeLearningHistoryRepositoryError(response, queryCtx, err)
+		return
+	}
+	if services.history == nil {
+		writeError(response, http.StatusServiceUnavailable, "history_unavailable", "local learning history is unavailable")
+		return
+	}
+	reviewed, err := services.history.ReviewedPiSessionIDs(queryCtx, canonicalRoot, payload.PiSessionIDs)
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "history_unavailable", "local learning history is unavailable")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"protocol_version":        protocolVersion,
+		"reviewed_pi_session_ids": reviewed,
+	})
+}
+
+func validPiSessionReviewQuery(request piSessionReviewQueryRequest) bool {
+	if request.Repository == "" || len(request.Repository) > 4096 || !filepath.IsAbs(request.Repository) ||
+		len(request.PiSessionIDs) < 1 || len(request.PiSessionIDs) > maxPiSessionReviewCandidates {
+		return false
+	}
+	seen := make(map[string]struct{}, len(request.PiSessionIDs))
+	for _, piSessionID := range request.PiSessionIDs {
+		if !history.ValidPiSessionID(piSessionID) {
+			return false
+		}
+		if _, exists := seen[piSessionID]; exists {
+			return false
+		}
+		seen[piSessionID] = struct{}{}
+	}
+	return true
 }
 
 func handleLearningHistoryQuery(response http.ResponseWriter, request *http.Request, token string, services serverServices) {
@@ -377,6 +466,52 @@ func handleEvidencePreview(response http.ResponseWriter, request *http.Request, 
 		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
 		return
 	}
+	serveEvidencePreview(response, request, payload, selection, "", services)
+}
+
+func handlePiSessionEvidencePreview(response http.ResponseWriter, request *http.Request, token string, services serverServices) {
+	if request.Method != http.MethodPost {
+		response.Header().Set("Allow", http.MethodPost)
+		writeError(response, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if !authorized(request, token) {
+		response.Header().Set("WWW-Authenticate", "PiLearnLoop")
+		writeError(response, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(response, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBytes)
+	content, err := io.ReadAll(request.Body)
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeError(response, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+			return
+		}
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	var payload piSessionPreviewRequest
+	if err := decodeStrictJSON(content, &payload); err != nil || !hasExactPiSessionPreviewFields(content) || !history.ValidPiSessionID(payload.PiSessionID) {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	preview := previewRequest{Repository: payload.Repository, Selection: payload.Selection}
+	selection, ok := validatePreviewRequest(preview)
+	if !ok {
+		writeError(response, http.StatusBadRequest, "invalid_request", "request body is invalid")
+		return
+	}
+	serveEvidencePreview(response, request, preview, selection, payload.PiSessionID, services)
+}
+
+func serveEvidencePreview(response http.ResponseWriter, request *http.Request, payload previewRequest, selection evidence.Selection, piSessionID string, services serverServices) {
 	previewCtx, cancel := context.WithTimeout(request.Context(), evidenceTimeout)
 	defer cancel()
 	result, err := evidence.Preview(previewCtx, evidence.Request{
@@ -398,7 +533,11 @@ func handleEvidencePreview(response http.ResponseWriter, request *http.Request, 
 	}
 	continuation := continuationDescriptor{Available: false, Reason: "evaluator_unavailable"}
 	if services.questionEvaluator != nil {
-		continuation, err = services.continuations.retain(result)
+		if piSessionID == "" {
+			continuation, err = services.continuations.retain(result)
+		} else {
+			continuation, err = services.continuations.retainWithPiSession(result, piSessionID)
+		}
 		if err != nil {
 			writeError(response, http.StatusInternalServerError, "internal_error", "internal error")
 			return
@@ -468,7 +607,7 @@ func handleQuestionSet(response http.ResponseWriter, request *http.Request, toke
 		return
 	}
 
-	bundle, err := evidence.BuildBundle(retained)
+	bundle, err := evidence.BuildBundle(retained.result)
 	if err != nil {
 		writeError(response, http.StatusBadGateway, "evaluator_failed", "question evaluation failed")
 		return
@@ -498,9 +637,10 @@ func handleQuestionSet(response http.ResponseWriter, request *http.Request, toke
 		descriptor.Reason = "insufficient_evidence"
 	} else if services.assessments != nil {
 		descriptor, err = services.assessments.Start(input, result, selection, assessment.Provenance{
-			CanonicalRoot:    retained.RepositoryRoot,
+			CanonicalRoot:    retained.result.RepositoryRoot,
 			QuestionPrompt:   historyPrompt(prompts.EvaluatorQuestionGenerationV1Metadata()),
 			AssessmentPrompt: historyPrompt(prompts.EvaluatorAnswerAssessmentV1Metadata()),
+			PiSessionID:      retained.piSessionID,
 		})
 		if err != nil {
 			writeError(response, http.StatusInternalServerError, "internal_error", "internal error")
@@ -597,6 +737,30 @@ func historyPrompt(metadata prompts.Metadata) history.PromptProvenance {
 		Version: metadata.Version,
 		SHA256:  metadata.SHA256,
 	}
+}
+
+func hasExactPiSessionPreviewFields(content []byte) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(content, &object); err != nil || !hasExactKeys(object, "repository", "pi_session_id", "selection") {
+		return false
+	}
+	var selection map[string]json.RawMessage
+	if err := json.Unmarshal(object["selection"], &selection); err != nil {
+		return false
+	}
+	var kind string
+	if err := json.Unmarshal(selection["kind"], &kind); err != nil {
+		return false
+	}
+	if kind == "working_tree" {
+		return hasExactKeys(selection, "kind", "base")
+	}
+	return kind == "commit_range" && hasExactKeys(selection, "kind", "base", "head")
+}
+
+func hasExactPiSessionReviewQueryFields(content []byte) bool {
+	var object map[string]json.RawMessage
+	return json.Unmarshal(content, &object) == nil && hasExactKeys(object, "repository", "pi_session_ids")
 }
 
 func hasExactQuestionSetFields(content []byte) bool {

@@ -24,11 +24,38 @@ func TestContinuationStoreIsSingleUseAndOwnsRetainedResult(t *testing.T) {
 	result.Files[0].Declarations[0].Excerpt = "mutated"
 
 	retained, ok := store.consume(descriptor.ID)
-	if !ok || retained.Files[0].Declarations[0].Excerpt != "original" {
+	if !ok || retained.result.Files[0].Declarations[0].Excerpt != "original" || retained.piSessionID != "" {
 		t.Fatalf("consume() = (%#v, %t), want the retained immutable value", retained, ok)
 	}
 	if _, ok := store.consume(descriptor.ID); ok {
 		t.Fatal("second consume succeeded, want single use")
+	}
+}
+
+func TestContinuationStoreOwnsPiSessionProvenanceSeparately(t *testing.T) {
+	store := testContinuationStore()
+	result := continuationTestResult("original")
+	descriptor, err := store.retainWithPiSession(result, "session-123")
+	if err != nil {
+		t.Fatalf("retainWithPiSession(): %v", err)
+	}
+	result.Files[0].Declarations[0].Excerpt = "mutated"
+
+	retained, ok := store.consume(descriptor.ID)
+	if !ok || retained.result.Files[0].Declarations[0].Excerpt != "original" || retained.piSessionID != "session-123" {
+		t.Fatalf("consume() = (%#v, %t), want owned evidence and separate Session provenance", retained, ok)
+	}
+}
+
+func TestContinuationStoreRejectsInvalidPiSessionWithoutEcho(t *testing.T) {
+	store := testContinuationStore()
+	invalid := "private/session"
+	descriptor, err := store.retainWithPiSession(continuationTestResult("evidence"), invalid)
+	if err == nil || strings.Contains(err.Error(), invalid) {
+		t.Fatalf("retainWithPiSession(invalid) = (%#v, %v), want safe error", descriptor, err)
+	}
+	if len(store.entries) != 0 || store.retainedBytes != 0 {
+		t.Fatalf("invalid Session provenance changed store state: %#v", store)
 	}
 }
 

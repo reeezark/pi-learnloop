@@ -2,7 +2,7 @@
 id: explicit-pi-session-review
 status: active
 risk: high
-current_phase: 2
+current_phase: 3
 phase_status: awaiting_approval
 updated: 2026-09-02
 ---
@@ -25,7 +25,7 @@ The repository already has three useful seams:
 - daemon-owned preview continuation preserves the exact reviewed evidence without trusting a client-built bundle;
 - `internal/history` owns the protected SQLite schema, source-free assessment lifecycle, recovery, and repository-scoped lookup.
 
-This task must deepen those seams without widening `evidence.Bundle`, evaluator schemas, prompts, RPC, or the generic learning-history interface. ADR-0006 was accepted on 2026-09-02, and Phase 1 was explicitly authorized on the same date.
+This task must deepen those seams without widening `evidence.Bundle`, evaluator schemas, prompts, RPC, or the generic learning-history interface. ADR-0006 was accepted on 2026-09-02, and Phases 1 and 2 were explicitly authorized on the same date.
 
 ## 3. Verified Current Behavior
 
@@ -461,6 +461,6 @@ Before stopping each phase, inspect `git status`, `git diff --stat`, and the com
 
 ## 14. Open Questions
 
-- `Resolved 2026-09-02` — The user accepted ADR-0006 and explicitly authorized Phase 1. Later phases remain unauthorized.
+- `Resolved 2026-09-02` — The user accepted ADR-0006 and explicitly authorized Phases 1 and 2. Phase 2 is complete; Phase 3 remains unauthorized.
 - `TODO / Need Confirmation before Phase 3` — Is Pi 0.84.3's full-file scan and materialization of `firstMessage`/`allMessagesText` acceptable for a manual ID-only list under representative Session volumes? If not, redesign from authoritative Pi capabilities before Phase 3; do not infer permission for a custom parser, index, hook, or dependency.
 - No Phase 1 design dependency remains unresolved: schema v2 is nullable/non-destructive, the Session ID contract is bounded, reviewed semantics are completion-only, and no dependency change is proposed.

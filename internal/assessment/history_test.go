@@ -2,6 +2,7 @@ package assessment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,71 @@ import (
 	"github.com/reeezark/pi-learnloop/internal/evaluator"
 	"github.com/reeezark/pi-learnloop/internal/history"
 )
+
+func TestServiceHistoryStoresPiSessionOutsideEvaluatorValues(t *testing.T) {
+	store := openHistoryStore(t)
+	provenance := validHistoryProvenance()
+	provenance.PiSessionID = "session-model-isolation-123"
+	service := testServiceWithHistory(evaluatorFunc(func(_ context.Context, input evaluator.AssessmentInput, selection evaluator.ModelSelection) (evaluator.AssessmentTurn, error) {
+		modelValues, err := json.Marshal(struct {
+			Input     evaluator.AssessmentInput
+			Selection evaluator.ModelSelection
+		}{Input: input, Selection: selection})
+		if err != nil {
+			t.Fatalf("Marshal(model values): %v", err)
+		}
+		if strings.Contains(string(modelValues), provenance.PiSessionID) {
+			t.Fatalf("model-visible values contain Pi Session identity: %s", modelValues)
+		}
+		reviewed, err := store.ReviewedPiSessionIDs(context.Background(), provenance.CanonicalRoot, []string{provenance.PiSessionID})
+		if err != nil || len(reviewed) != 0 {
+			t.Fatalf("ReviewedPiSessionIDs(running) = (%#v, %v), want empty", reviewed, err)
+		}
+		return completeTurn(input), nil
+	}), store)
+
+	input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
+	descriptor, err := service.Start(input, questions, selection, provenance)
+	if err != nil || !descriptor.Available {
+		t.Fatalf("Start() = (%#v, %v), want available", descriptor, err)
+	}
+	result, err := service.Submit(context.Background(), descriptor.ID, initialSubmission())
+	if err != nil || !result.History.Saved {
+		t.Fatalf("Submit() = (%#v, %v), want saved completion", result, err)
+	}
+	reviewed, err := store.ReviewedPiSessionIDs(context.Background(), provenance.CanonicalRoot, []string{provenance.PiSessionID})
+	if err != nil || len(reviewed) != 1 || reviewed[0] != provenance.PiSessionID {
+		t.Fatalf("ReviewedPiSessionIDs(complete) = (%#v, %v), want Session identity", reviewed, err)
+	}
+	records, err := store.List(context.Background(), provenance.CanonicalRoot, 10)
+	if err != nil {
+		t.Fatalf("List(): %v", err)
+	}
+	genericHistory, err := json.Marshal(records)
+	if err != nil {
+		t.Fatalf("Marshal(generic history): %v", err)
+	}
+	if strings.Contains(string(genericHistory), provenance.PiSessionID) {
+		t.Fatalf("generic history contains Pi Session identity: %s", genericHistory)
+	}
+}
+
+func TestServiceRejectsInvalidPiSessionProvenanceBeforeEvaluation(t *testing.T) {
+	var calls atomic.Int64
+	service := testServiceWithHistory(evaluatorFunc(func(context.Context, evaluator.AssessmentInput, evaluator.ModelSelection) (evaluator.AssessmentTurn, error) {
+		calls.Add(1)
+		return evaluator.AssessmentTurn{}, nil
+	}), openHistoryStore(t))
+	input, questions, selection := validStartContext(t, "func Validate() error { return nil }")
+	provenance := validHistoryProvenance()
+	provenance.PiSessionID = "private/session"
+	if descriptor, err := service.Start(input, questions, selection, provenance); descriptor != (Descriptor{}) || !errors.Is(err, ErrInvalidStart) {
+		t.Fatalf("Start(invalid provenance) = (%#v, %v), want ErrInvalidStart", descriptor, err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("evaluator calls = %d, want 0", calls.Load())
+	}
+}
 
 func TestServiceHistoryCompleteLifecycle(t *testing.T) {
 	store := openHistoryStore(t)

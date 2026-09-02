@@ -2,7 +2,7 @@
 id: explicit-pi-session-review-phase-1
 plan: explicit-pi-session-review
 phase: 1
-status: current
+status: superseded
 updated: 2026-09-02
 ---
 

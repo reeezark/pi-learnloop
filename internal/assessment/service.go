@@ -66,6 +66,7 @@ type Provenance struct {
 	CanonicalRoot    string
 	QuestionPrompt   history.PromptProvenance
 	AssessmentPrompt history.PromptProvenance
+	PiSessionID      string
 }
 
 type entryState uint8
@@ -144,6 +145,9 @@ func (service *Service) Start(input evaluator.Input, questions evaluator.Questio
 		return Descriptor{Available: false, Reason: "evaluator_unavailable"}, nil
 	}
 	if err := evaluator.ValidateModelSelection(selection); err != nil {
+		return Descriptor{}, ErrInvalidStart
+	}
+	if provenance.PiSessionID != "" && !history.ValidPiSessionID(provenance.PiSessionID) {
 		return Descriptor{}, ErrInvalidStart
 	}
 
@@ -326,7 +330,7 @@ func (service *Service) Submit(ctx context.Context, id string, submission Submis
 }
 
 func (service *Service) createHistory(ctx context.Context, current entry, input evaluator.AssessmentInput) string {
-	recordID, err := service.history.Create(ctx, history.Start{
+	start := history.Start{
 		CanonicalRoot:           current.provenance.CanonicalRoot,
 		StartedAt:               service.historyNow(),
 		BaseRevision:            input.EvaluatorInput.EvidenceBundle.BaseRevision,
@@ -340,7 +344,14 @@ func (service *Service) createHistory(ctx context.Context, current entry, input 
 		Provider:                current.selection.Provider,
 		ModelID:                 current.selection.ModelID,
 		ThinkingLevel:           current.selection.ThinkingLevel,
-	})
+	}
+	var recordID string
+	var err error
+	if current.provenance.PiSessionID == "" {
+		recordID, err = service.history.Create(ctx, start)
+	} else {
+		recordID, err = service.history.CreateWithPiSession(ctx, start, current.provenance.PiSessionID)
+	}
 	if err != nil {
 		return ""
 	}

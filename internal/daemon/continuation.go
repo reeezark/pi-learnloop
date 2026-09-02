@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/reeezark/pi-learnloop/internal/evidence"
+	"github.com/reeezark/pi-learnloop/internal/history"
 )
 
 const (
@@ -23,9 +24,14 @@ type continuationDescriptor struct {
 }
 
 type continuationEntry struct {
-	result       evidence.Result
+	value        continuationValue
 	expiresAt    time.Time
 	excerptBytes int
+}
+
+type continuationValue struct {
+	result      evidence.Result
+	piSessionID string
 }
 
 type continuationStore struct {
@@ -51,6 +57,17 @@ func newContinuationStore() *continuationStore {
 }
 
 func (store *continuationStore) retain(result evidence.Result) (continuationDescriptor, error) {
+	return store.retainValue(result, "")
+}
+
+func (store *continuationStore) retainWithPiSession(result evidence.Result, piSessionID string) (continuationDescriptor, error) {
+	if !history.ValidPiSessionID(piSessionID) {
+		return continuationDescriptor{}, fmt.Errorf("retain Pi Session provenance: invalid identity")
+	}
+	return store.retainValue(result, piSessionID)
+}
+
+func (store *continuationStore) retainValue(result evidence.Result, piSessionID string) (continuationDescriptor, error) {
 	bytes := resultExcerptBytes(result)
 	if bytes == 0 {
 		return continuationDescriptor{Available: false, Reason: "insufficient_evidence"}, nil
@@ -81,7 +98,10 @@ func (store *continuationStore) retain(result evidence.Result) (continuationDesc
 
 	expiresAt := now.Add(continuationLifetime)
 	store.entries[id] = continuationEntry{
-		result:       cloneEvidenceResult(result),
+		value: continuationValue{
+			result:      cloneEvidenceResult(result),
+			piSessionID: piSessionID,
+		},
 		expiresAt:    expiresAt,
 		excerptBytes: bytes,
 	}
@@ -93,17 +113,17 @@ func (store *continuationStore) retain(result evidence.Result) (continuationDesc
 	}, nil
 }
 
-func (store *continuationStore) consume(id string) (evidence.Result, bool) {
+func (store *continuationStore) consume(id string) (continuationValue, bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.purgeExpired(store.now().UTC())
 	entry, exists := store.entries[id]
 	if !exists {
-		return evidence.Result{}, false
+		return continuationValue{}, false
 	}
 	delete(store.entries, id)
 	store.retainedBytes -= entry.excerptBytes
-	return entry.result, true
+	return entry.value, true
 }
 
 func (store *continuationStore) clear() {

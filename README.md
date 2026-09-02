@@ -18,11 +18,12 @@ Implemented:
 - a released embedded assessment prompt and production Pi 0.84.3 RPC adapter that starts a fresh isolated process for the initial assessment and, when requested, one F1 assessment;
 - deterministic service, protocol, concurrency, cancellation, extension, and fake-process tests for the complete answer flow;
 - daemon-owned protected SQLite history at `os.UserConfigDir()/pi-learnloop/data/history.db`, with schema v2 migrations, source-free running/F1/terminal records, one nullable bounded Pi Session ID provenance value, startup interruption marking, and explicit save status in complete assessment responses;
-- a strict authenticated `/v1/learning-history-queries` route capped at 50 records and a manual `/learn-history` UI that requests the 20 newest records for the current canonical Git repository without a model call.
+- a strict authenticated `/v1/learning-history-queries` route capped at 50 records and a manual `/learn-history` UI that requests the 20 newest records for the current canonical Git repository without a model call;
+- independent strict authenticated `/v1/pi-session-evidence-previews` and `/v1/pi-session-review-queries` routes that keep a bounded Session ID beside retained evidence, propagate it only to Session-aware history, and filter only completed IDs in the canonical repository.
 
 Not implemented:
 
-- explicit Pi Session selection and its dedicated daemon routes; the current Git-only assessment path stores SQL `NULL` for Session provenance;
+- explicit Pi Session selection in `/learn` and the extension client for the dedicated routes; the current Git-only assessment path stores SQL `NULL` for Session provenance;
 - SSE, background jobs, Session indexing, or automatic reminders;
 - npm publication or release automation.
 
@@ -100,13 +101,14 @@ The package has no third-party runtime npm dependency. `@earendil-works/pi-codin
 - Discovery metadata and the per-start Instance Token live under the current user's protected configuration directory.
 - The extension accepts only an exact `http://127.0.0.1:<port>` descriptor, verifies the daemon instance before reading the token, bypasses environment HTTP proxies, and retries discovery at most once after a startup race.
 - `/learn` submits the trusted Pi working directory and the explicit Git selection. It does not send Pi credentials.
-- A successful preview may retain only its bounded evidence in daemon memory for five minutes. The opaque continuation is single-use, has fixed count and byte limits, and is removed on expiry or daemon shutdown.
+- A successful preview may retain only its bounded evidence in daemon memory for five minutes. A Session-bound preview retains one validated source-free Session ID beside, never inside, that evidence. The opaque continuation is single-use, has fixed count and byte limits, and is removed on expiry or daemon shutdown.
 - Confirmation sends only the opaque continuation ID and non-secret active model identifiers to the daemon. The daemon builds the evaluator input from the exact retained preview without rereading the repository.
 - Successful production questions may retain their exact validated input for at most thirty minutes under an eight-entry/1-MiB cap. Initial answers and F1 are bounded to 4 KiB each, submissions are atomically single-consume, and completed, failed, expired, or concurrent IDs share a non-retryable unavailable result.
 - Daemon assessment state, source, answers, prompt bodies, model output, and feedback are never persisted or logged.
 - The daemon opens the protected history store at `os.UserConfigDir()/pi-learnloop/data/history.db`. It accepts only canonical repository identity, revisions, manifest/schema/prompt/model provenance, safe lifecycle status, deterministic label, Q1/Q2/Q3 kinds/verdicts, and an optional bounded source-free Pi Session ID through the dedicated history seam. The current Git-only daemon path stores SQL `NULL`. It rejects symlinked, overbroad, wrong-owner, hard-linked, non-local, corrupt, or newer-schema storage without automatic repair, then keeps preview and assessment available without history.
 - A validated initial submission creates one source-free `running` record before evaluation when storage is available. F1 reuses it, completion stores exactly three verdicts, known evaluator failures use bounded safe codes, and restart converts leftover `running` rows to `interrupted` without resuming or retrying evaluation.
 - `/learn-history` sends only the current trusted working-directory path and a fixed limit of 20 to the authenticated local daemon. The daemon verifies the canonical Git root and returns only matching source-free records; it never returns the stored canonical root, source, questions, answers, feedback, or records from another repository.
+- The dedicated Session review query accepts 1–20 unique bounded IDs, verifies the repository first, and returns only IDs with a complete record in candidate order. Running, failed, interrupted, NULL, and other-repository records do not match; unavailable history is reported explicitly. Session IDs never enter evidence bundles, evaluator inputs, prompts, RPC/model content, errors, logs, or generic history responses.
 - SQLite WAL state is part of the database. Do not copy only `history.db` while the daemon is running; `history.db-wal` and `history.db-shm` may be required for a consistent manual backup. No backup or export command is implemented.
 - Production question generation and every assessment turn start a frozen, symlink-resolved Pi 0.84.3 executable directly without a shell. Sessions, tools, extensions, skills, prompt templates, themes, context files, and project approval are disabled.
 - Only the selected excerpts and non-secret bundle provenance enter the Pi-managed model request. Credentials never enter HTTP, argv, prompts, logs, persisted records, or model-visible content.
