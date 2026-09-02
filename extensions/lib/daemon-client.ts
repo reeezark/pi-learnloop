@@ -14,6 +14,7 @@ import {
   type EvidenceSelection,
   type LearningHistoryRecord,
   type LearningHistoryResponse,
+  type PiSessionReviewResponse,
   type QuestionSet,
 } from "./learn-command.ts";
 
@@ -70,9 +71,30 @@ export class DaemonEvidenceClient implements LearnClient {
   }
 
   async preview(repository: string, selection: EvidenceSelection): Promise<EvidencePreviewResponse> {
+    return this.previewWithDiscoveryRace(
+      "/v1/evidence-previews",
+      { repository, selection },
+    );
+  }
+
+  async previewPiSession(
+    repository: string,
+    piSessionID: string,
+    selection: EvidenceSelection,
+  ): Promise<EvidencePreviewResponse> {
+    if (!validPiSessionID(piSessionID)) {
+      throw new EvidenceClientError("invalid_request", "Pi Session identity is invalid");
+    }
+    return this.previewWithDiscoveryRace(
+      "/v1/pi-session-evidence-previews",
+      { repository, pi_session_id: piSessionID, selection },
+    );
+  }
+
+  private async previewWithDiscoveryRace(path: string, payload: unknown): Promise<EvidencePreviewResponse> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        return await this.previewOnce(repository, selection);
+        return await this.previewOnce(path, payload);
       } catch (error) {
         const clientError = normalizeClientError(error);
         if (attempt === 0 && isDiscoveryRace(clientError)) {
@@ -116,6 +138,40 @@ export class DaemonEvidenceClient implements LearnClient {
         ...result.body.question_set,
         ...(result.body.assessment === undefined ? {} : { assessment: result.body.assessment }),
       };
+    } catch (error) {
+      throw normalizeClientError(error);
+    }
+  }
+
+  async reviewedPiSessionIDs(repository: string, piSessionIDs: string[]): Promise<PiSessionReviewResponse> {
+    try {
+      if (
+        piSessionIDs.length < 1 ||
+        piSessionIDs.length > 20 ||
+        !piSessionIDs.every(validPiSessionID) ||
+        new Set(piSessionIDs).size !== piSessionIDs.length
+      ) {
+        throw new EvidenceClientError("invalid_request", "Pi Session review candidates are invalid");
+      }
+      const { port, token } = await this.discover();
+      const result = await requestJSON(
+        port,
+        "POST",
+        "/v1/pi-session-review-queries",
+        JSON.stringify({ repository, pi_session_ids: piSessionIDs }),
+        token,
+        HISTORY_QUERY_TIMEOUT_MS,
+      );
+      if (result.statusCode === 401) {
+        throw new EvidenceClientError("unauthorized", "authentication required");
+      }
+      if (result.statusCode !== 200) {
+        throw parseServerError(result.body);
+      }
+      if (!isPiSessionReviewResponse(result.body, piSessionIDs)) {
+        throw new EvidenceClientError("protocol_mismatch", "daemon Pi Session review response is invalid");
+      }
+      return result.body;
     } catch (error) {
       throw normalizeClientError(error);
     }
@@ -179,16 +235,16 @@ export class DaemonEvidenceClient implements LearnClient {
   }
 
   private async previewOnce(
-    repository: string,
-    selection: EvidenceSelection,
+    path: string,
+    payload: unknown,
   ): Promise<EvidencePreviewResponse> {
     const { port, token } = await this.discover();
 
     const result = await requestJSON(
       port,
       "POST",
-      "/v1/evidence-previews",
-      JSON.stringify({ repository, selection }),
+      path,
+      JSON.stringify(payload),
       token,
       PREVIEW_TIMEOUT_MS,
     );
@@ -224,6 +280,14 @@ export class DaemonEvidenceClient implements LearnClient {
     }
     return { port, token };
   }
+}
+
+function validPiSessionID(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    Buffer.byteLength(value, "ascii") <= 128 &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value)
+  );
 }
 
 function parseServerError(value: unknown): EvidenceClientError {
@@ -563,6 +627,29 @@ function isLearningHistoryResponse(value: unknown, limit: number): value is Lear
   return records.every((record, index) =>
     index === 0 || Date.parse(records[index - 1]!.started_at) >= Date.parse(record.started_at)
   );
+}
+
+function isPiSessionReviewResponse(value: unknown, candidates: string[]): value is PiSessionReviewResponse {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(value, "protocol_version", "reviewed_pi_session_ids") ||
+    value.protocol_version !== 1 ||
+    !Array.isArray(value.reviewed_pi_session_ids) ||
+    value.reviewed_pi_session_ids.length > candidates.length ||
+    !value.reviewed_pi_session_ids.every(validPiSessionID) ||
+    new Set(value.reviewed_pi_session_ids).size !== value.reviewed_pi_session_ids.length
+  ) {
+    return false;
+  }
+  let previousIndex = -1;
+  for (const id of value.reviewed_pi_session_ids) {
+    const index = candidates.indexOf(id);
+    if (index <= previousIndex) {
+      return false;
+    }
+    previousIndex = index;
+  }
+  return true;
 }
 
 function isLearningHistoryRecord(value: unknown): value is LearningHistoryRecord {

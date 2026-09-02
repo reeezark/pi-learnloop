@@ -85,7 +85,7 @@ The extension uses `SessionManager.list(ctx.cwd, ctx.sessionManager.getSessionDi
 
 LearnLoop adds no automatic lifecycle hook, background index, Git snapshot, reminder, startup notification, polling, Session marker, Session-file write, or extension-owned persistence.
 
-Pi 0.84.3's list-time full-file/message materialization is an accepted design limitation only if explicitly reviewed before Phase 3. LearnLoop never uses, logs, displays, persists, or transmits those message/metadata values. If the resource/privacy cost is unacceptable, Phase 3 stops for redesign from authoritative Pi capabilities; the implementation must not silently add a custom Session parser, hook, index, or dependency.
+The user explicitly reviewed and accepted Pi 0.84.3's list-time full-file/message materialization as a Phase 3 design limitation on 2026-09-02. LearnLoop never uses, logs, displays, persists, or transmits those message/metadata values. The implementation immediately projects the returned list to at most 20 IDs and allows the richer references to be released; it does not add a custom Session parser, hook, index, or dependency.
 
 ## Alternatives
 
@@ -134,5 +134,5 @@ Rejected for this capability. It adds lifecycle hooks, extension-owned persisten
 - Completion-only filtering keeps failed/interrupted work visible for another explicit review.
 - Separate authenticated routes add protocol surface but avoid breaking current strict request interfaces.
 - Session IDs remain local provenance and are not model-visible or returned by generic history.
-- Pi 0.84.3 may temporarily materialize unused Session messages and metadata in extension memory during manual listing. That cost must be reviewed before Phase 3 and may force a redesign.
+- Pi 0.84.3 temporarily materializes unused Session messages and metadata in extension memory during manual listing. That cost was explicitly reviewed and accepted for the bounded Phase 3 workflow; it still scales with every candidate file read by Pi rather than the 20 IDs LearnLoop retains.
 - No dependency, automatic hook, snapshot, marker, reminder, extension store, Session write, or background worker is introduced.

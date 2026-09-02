@@ -1,9 +1,9 @@
 ---
 id: explicit-pi-session-review
-status: active
+status: complete
 risk: high
 current_phase: 3
-phase_status: awaiting_approval
+phase_status: complete
 updated: 2026-09-02
 ---
 
@@ -25,7 +25,7 @@ The repository already has three useful seams:
 - daemon-owned preview continuation preserves the exact reviewed evidence without trusting a client-built bundle;
 - `internal/history` owns the protected SQLite schema, source-free assessment lifecycle, recovery, and repository-scoped lookup.
 
-This task must deepen those seams without widening `evidence.Bundle`, evaluator schemas, prompts, RPC, or the generic learning-history interface. ADR-0006 was accepted on 2026-09-02, and Phases 1 and 2 were explicitly authorized on the same date.
+This task must deepen those seams without widening `evidence.Bundle`, evaluator schemas, prompts, RPC, or the generic learning-history interface. ADR-0006 was accepted on 2026-09-02, all three phases were explicitly authorized on the same date, and the user explicitly accepted Pi 0.84.3's list-time message materialization limitation before Phase 3.
 
 ## 3. Verified Current Behavior
 
@@ -461,6 +461,6 @@ Before stopping each phase, inspect `git status`, `git diff --stat`, and the com
 
 ## 14. Open Questions
 
-- `Resolved 2026-09-02` — The user accepted ADR-0006 and explicitly authorized Phases 1 and 2. Phase 2 is complete; Phase 3 remains unauthorized.
-- `TODO / Need Confirmation before Phase 3` — Is Pi 0.84.3's full-file scan and materialization of `firstMessage`/`allMessagesText` acceptable for a manual ID-only list under representative Session volumes? If not, redesign from authoritative Pi capabilities before Phase 3; do not infer permission for a custom parser, index, hook, or dependency.
+- `Resolved 2026-09-02` — The user accepted ADR-0006 and explicitly authorized Phases 1, 2, and 3. All three phases are complete.
+- `Resolved 2026-09-02` — The user explicitly accepted Pi 0.84.3's full-file scan and in-process materialization of candidate `firstMessage`/`allMessagesText` for this manual bounded workflow. The completed Phase 3 implementation immediately projects to at most 20 validated IDs and does not use, display, transmit, log, persist, or otherwise retain the richer values.
 - No Phase 1 design dependency remains unresolved: schema v2 is nullable/non-destructive, the Session ID contract is bounded, reviewed semantics are completion-only, and no dependency change is proposed.

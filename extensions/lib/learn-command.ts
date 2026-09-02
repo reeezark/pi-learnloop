@@ -65,6 +65,13 @@ export interface EvidencePreviewClient {
   preview(repository: string, selection: EvidenceSelection): Promise<EvidencePreviewResponse>;
 }
 
+export interface PiSessionReviewResponse {
+  protocol_version: 1;
+  reviewed_pi_session_ids: string[];
+}
+
+export type PiSessionLister = (cwd: string, sessionDir: string) => Promise<readonly unknown[]>;
+
 export interface EvaluatorSelection {
   pi_version: string;
   provider: string;
@@ -181,6 +188,15 @@ export type AssessmentResult =
     };
 
 export interface LearnClient extends EvidencePreviewClient {
+  previewPiSession?(
+    repository: string,
+    piSessionID: string,
+    selection: EvidenceSelection,
+  ): Promise<EvidencePreviewResponse>;
+  reviewedPiSessionIDs?(
+    repository: string,
+    piSessionIDs: string[],
+  ): Promise<PiSessionReviewResponse>;
   questions(continuationID: string, selection: EvaluatorSelection): Promise<QuestionSet>;
   assess?(
     assessmentID: string,
@@ -230,6 +246,9 @@ export interface LearnCommandContext {
   };
   thinkingLevel?: string;
   isProjectTrusted(): boolean;
+  sessionManager?: {
+    getSessionDir(): string;
+  };
   ui: {
     select(title: string, options: string[]): Promise<string | undefined>;
     input(title: string, placeholder?: string): Promise<string | undefined>;
@@ -240,6 +259,8 @@ export interface LearnCommandContext {
 
 const COMMIT_RANGE = "Commit range";
 const WORKING_TREE = "Working tree against a base revision";
+const PI_SESSION = "Pi Session";
+const MAX_PI_SESSION_CANDIDATES = 20;
 const DEFAULT_HISTORY_LIMIT = 20;
 
 export function createLearnHistoryCommand(client: LearningHistoryClient) {
@@ -291,7 +312,7 @@ export function createLearnHistoryCommand(client: LearningHistoryClient) {
   };
 }
 
-export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
+export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", listPiSessions?: PiSessionLister) {
   return async function learnCommand(args: string, context: LearnCommandContext): Promise<void> {
     if (args.trim() !== "") {
       context.ui.notify("/learn does not accept arguments. Run it without arguments and choose a changeset.", "warning");
@@ -306,9 +327,72 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
       return;
     }
 
-    const selectionKind = await context.ui.select("Choose the Go changeset to preview", [WORKING_TREE, COMMIT_RANGE]);
+    let selectionKind = await context.ui.select("Choose what to review", [WORKING_TREE, COMMIT_RANGE, PI_SESSION]);
     if (selectionKind === undefined) {
       return;
+    }
+
+    let piSessionID: string | undefined;
+    if (selectionKind === PI_SESSION) {
+      if (
+        listPiSessions === undefined ||
+        context.sessionManager === undefined ||
+        client.reviewedPiSessionIDs === undefined ||
+        client.previewPiSession === undefined
+      ) {
+        context.ui.notify("Pi Session review is unavailable in this extension. Update Pi LearnLoop and run /learn again.", "warning");
+        return;
+      }
+
+      let candidateIDs: string[];
+      try {
+        candidateIDs = projectPiSessionIDs(
+          await listPiSessions(context.cwd, context.sessionManager.getSessionDir()),
+        );
+      } catch (error) {
+        context.ui.notify(
+          error instanceof PiSessionListError
+            ? "Pi returned invalid Session identities. Pi LearnLoop did not select, send, or save any Session data."
+            : "Pi could not list Sessions for this project. Pi LearnLoop did not select, send, or save any Session data.",
+          "error",
+        );
+        return;
+      }
+      if (candidateIDs.length === 0) {
+        context.ui.notify("No Pi Sessions are available for the current project.", "info");
+        return;
+      }
+
+      let reviewed: PiSessionReviewResponse;
+      try {
+        reviewed = await client.reviewedPiSessionIDs(context.cwd, candidateIDs);
+      } catch (error) {
+        notifyPiSessionReviewQueryError(error, context);
+        return;
+      }
+      const reviewedIDs = new Set(reviewed.reviewed_pi_session_ids);
+      const availableIDs = candidateIDs.filter((id) => !reviewedIDs.has(id));
+      if (availableIDs.length === 0) {
+        context.ui.notify("All of the newest Pi Sessions for this project already have a completed review.", "info");
+        return;
+      }
+
+      const selectedPiSessionID = await context.ui.select("Choose a Pi Session to review", availableIDs);
+      if (selectedPiSessionID === undefined) {
+        return;
+      }
+      if (!availableIDs.includes(selectedPiSessionID)) {
+        context.ui.notify("That Pi Session is not available for review.", "error");
+        return;
+      }
+      piSessionID = selectedPiSessionID;
+      selectionKind = await context.ui.select(
+        "Choose the Git changeset to associate with this Pi Session",
+        [WORKING_TREE, COMMIT_RANGE],
+      );
+      if (selectionKind === undefined) {
+        return;
+      }
     }
 
     const selection = await collectSelection(selectionKind, context);
@@ -318,7 +402,9 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
 
     let response: EvidencePreviewResponse;
     try {
-      response = await client.preview(context.cwd, selection);
+      response = piSessionID === undefined
+        ? await client.preview(context.cwd, selection)
+        : await client.previewPiSession!(context.cwd, piSessionID, selection);
     } catch (error) {
       if (error instanceof EvidenceClientError && error.code === "daemon_unavailable") {
         context.ui.notify(
@@ -345,7 +431,7 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
       return;
     }
 
-    context.ui.notify(formatPreview(response), "info");
+    context.ui.notify(formatPreview(response, piSessionID), "info");
     if (response.continuation === undefined) {
       return;
     }
@@ -445,6 +531,65 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3") {
       context.ui.notify("Pi LearnLoop could not generate learning questions. Run /learn again.", "error");
     }
   };
+}
+
+class PiSessionListError extends Error {}
+
+function projectPiSessionIDs(sessions: readonly unknown[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < Math.min(sessions.length, MAX_PI_SESSION_CANDIDATES); index += 1) {
+    const session = sessions[index];
+    if (!isObject(session) || !validPiSessionID(session.id)) {
+      throw new PiSessionListError("invalid Pi Session identity");
+    }
+    if (!seen.has(session.id)) {
+      seen.add(session.id);
+      ids.push(session.id);
+    }
+  }
+  return ids;
+}
+
+function validPiSessionID(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    Buffer.byteLength(value, "ascii") <= 128 &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value)
+  );
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function notifyPiSessionReviewQueryError(error: unknown, context: LearnCommandContext): void {
+  if (error instanceof EvidenceClientError && error.code === "history_unavailable") {
+    context.ui.notify(
+      "Pi Session review status is unavailable. Pi LearnLoop will not guess which Sessions are unreviewed; check the daemon and data directory, then run /learn again.",
+      "warning",
+    );
+    return;
+  }
+  if (error instanceof EvidenceClientError && error.code === "daemon_unavailable") {
+    context.ui.notify(
+      "Pi LearnLoop daemon is unavailable. Start it with `pi-learnloop daemon`, then run /learn again.",
+      "error",
+    );
+    return;
+  }
+  if (error instanceof EvidenceClientError && error.code === "unauthorized") {
+    context.ui.notify(
+      "Pi LearnLoop could not authenticate with the daemon. Restart `pi-learnloop daemon`, then run /learn again.",
+      "error",
+    );
+    return;
+  }
+  if (error instanceof EvidenceClientError && error.code === "invalid_repository") {
+    context.ui.notify("The current directory is not inside a supported Git repository.", "error");
+    return;
+  }
+  context.ui.notify("Pi LearnLoop could not check completed Pi Session reviews. Run /learn again.", "error");
 }
 
 async function collectAnswers(questionSet: QuestionSet, context: LearnCommandContext): Promise<AssessmentAnswer[] | undefined> {
@@ -602,7 +747,7 @@ async function collectSelection(
   return { kind: "commit_range", base, head };
 }
 
-export function formatPreview(response: EvidencePreviewResponse): string {
+export function formatPreview(response: EvidencePreviewResponse, piSessionID?: string): string {
   const { preview } = response;
   const declarations = preview.files.flatMap((file) => file.declarations);
   const excerptBytes = declarations.reduce(
@@ -622,7 +767,9 @@ export function formatPreview(response: EvidencePreviewResponse): string {
 
   return [
     "Evidence preview",
-    `Selection: ${preview.base_revision}..${preview.head_revision}`,
+    ...(piSessionID === undefined
+      ? [`Selection: ${preview.base_revision}..${preview.head_revision}`]
+      : [`User-selected association: Pi Session ${piSessionID} ↔ Git changeset ${preview.base_revision}..${preview.head_revision}`]),
     `Files: ${preview.files.length} | Symbols: ${declarations.length} | Approx. excerpt: ${excerptBytes} bytes`,
     ...fileLines,
     truncation,

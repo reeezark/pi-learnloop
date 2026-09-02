@@ -783,6 +783,235 @@ test("preserves history-unavailable and never retries the query", async (t) => {
   assert.equal(queryRequests, 1);
 });
 
+test("sends a Session-bound preview through the independent authenticated route", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "N".repeat(22);
+  const token = "O".repeat(43);
+  const requests: Array<{ url?: string; authorization?: string; body: string }> = [];
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    requests.push({
+      url: request.url,
+      authorization: request.headers.authorization,
+      body: await readBody(request),
+    });
+    writeJSON(response, 200, emptyPreview());
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  const result = await new DaemonEvidenceClient({ runtimeDir }).previewPiSession(
+    "/work/repository",
+    "session-123",
+    { kind: "working_tree", base: "HEAD" },
+  );
+
+  assert.deepEqual(result, emptyPreview());
+  assert.deepEqual(requests, [{
+    url: "/v1/pi-session-evidence-previews",
+    authorization: `PiLearnLoop ${token}`,
+    body: JSON.stringify({
+      repository: "/work/repository",
+      pi_session_id: "session-123",
+      selection: { kind: "working_tree", base: "HEAD" },
+    }),
+  }]);
+});
+
+test("sends one bounded Session review query and validates its ID-only response", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "P".repeat(22);
+  const token = "Q".repeat(43);
+  const requests: Array<{ url?: string; authorization?: string; body: string }> = [];
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    requests.push({
+      url: request.url,
+      authorization: request.headers.authorization,
+      body: await readBody(request),
+    });
+    writeJSON(response, 200, {
+      protocol_version: 1,
+      reviewed_pi_session_ids: ["session-c", "session-a"],
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  const result = await new DaemonEvidenceClient({ runtimeDir }).reviewedPiSessionIDs(
+    "/work/repository",
+    ["session-c", "session-b", "session-a"],
+  );
+
+  assert.deepEqual(result, {
+    protocol_version: 1,
+    reviewed_pi_session_ids: ["session-c", "session-a"],
+  });
+  assert.deepEqual(requests, [{
+    url: "/v1/pi-session-review-queries",
+    authorization: `PiLearnLoop ${token}`,
+    body: JSON.stringify({
+      repository: "/work/repository",
+      pi_session_ids: ["session-c", "session-b", "session-a"],
+    }),
+  }]);
+});
+
+test("rejects non-exact, invalid, duplicated, unrelated, or reordered Session review responses", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "R".repeat(22);
+  const token = "S".repeat(43);
+  const responses: unknown[] = [
+    { protocol_version: 1, reviewed_pi_session_ids: ["session-a"], extra: true },
+    { protocol_version: 1, reviewed_pi_session_ids: ["private/session"] },
+    { protocol_version: 1, reviewed_pi_session_ids: ["session-a", "session-a"] },
+    { protocol_version: 1, reviewed_pi_session_ids: ["session-z"] },
+    { protocol_version: 1, reviewed_pi_session_ids: ["session-c", "session-a"] },
+  ];
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    await readBody(request);
+    writeJSON(response, 200, responses.shift());
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  for (let index = 0; index < 5; index += 1) {
+    await assert.rejects(
+      new DaemonEvidenceClient({ runtimeDir }).reviewedPiSessionIDs(
+        "/work/repository",
+        ["session-a", "session-b", "session-c"],
+      ),
+      (error: unknown) => error instanceof EvidenceClientError && error.code === "protocol_mismatch",
+    );
+  }
+});
+
+test("rejects unbounded or invalid Session query inputs before daemon discovery", async () => {
+  const client = new DaemonEvidenceClient({ runtimeDir: "/missing/runtime" });
+  const invalidCandidates = [
+    [],
+    Array.from({ length: 21 }, (_, index) => `session-${index}`),
+    ["same", "same"],
+    ["private/session"],
+    ["a".repeat(129)],
+  ];
+
+  for (const candidates of invalidCandidates) {
+    await assert.rejects(
+      client.reviewedPiSessionIDs("/work/repository", candidates),
+      (error: unknown) => error instanceof EvidenceClientError && error.code === "invalid_request",
+    );
+  }
+  await assert.rejects(
+    client.previewPiSession("/work/repository", "private/session", { kind: "working_tree", base: "HEAD" }),
+    (error: unknown) => error instanceof EvidenceClientError && error.code === "invalid_request",
+  );
+});
+
+test("preserves Session history unavailability and never retries the review query", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "T".repeat(22);
+  const token = "U".repeat(43);
+  let statusRequests = 0;
+  let queryRequests = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      statusRequests += 1;
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    queryRequests += 1;
+    await readBody(request);
+    writeJSON(response, 503, {
+      protocol_version: 1,
+      error: { code: "history_unavailable", message: "local learning history is unavailable" },
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
+    }),
+  );
+
+  await assert.rejects(
+    new DaemonEvidenceClient({ runtimeDir }).reviewedPiSessionIDs("/work/repository", ["session-a"]),
+    (error: unknown) => error instanceof EvidenceClientError && error.code === "history_unavailable",
+  );
+  assert.equal(statusRequests, 1);
+  assert.equal(queryRequests, 1);
+});
+
 async function writeProtectedFile(path: string, content: string): Promise<void> {
   await writeFile(path, content, { mode: 0o600 });
   await chmod(path, 0o600);
