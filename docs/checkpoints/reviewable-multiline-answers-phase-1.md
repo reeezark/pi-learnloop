@@ -2,7 +2,7 @@
 id: reviewable-multiline-answers-phase-1
 plan: reviewable-multiline-answers
 phase: 1
-status: current
+status: superseded
 updated: 2026-09-03
 ---
 
@@ -28,6 +28,9 @@ have not been committed or pushed.
 
 The plan has advanced to Phase 2 with `phase_status: awaiting_approval`. No
 Phase 2 extension or stable-documentation work has started.
+
+This checkpoint was superseded after Phase 1 was committed and pushed as
+`1e8d793`, and the separately authorized Phase 2 completed on 2026-09-03.
 
 ## Completed
 

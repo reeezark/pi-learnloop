@@ -1,9 +1,9 @@
 ---
 id: reviewable-multiline-answers
-status: active
+status: complete
 risk: high
 current_phase: 2
-phase_status: awaiting_approval
+phase_status: complete
 updated: 2026-09-03
 ---
 
@@ -449,7 +449,8 @@ On completion, create the Phase 1 checkpoint, advance this plan to Phase 2 with
 
 ### Phase 2 — Pi editor, answer review, and stable documentation
 
-Status: awaiting explicit authorization after Phase 1.
+Status: complete on 2026-09-03. See
+`docs/checkpoints/reviewable-multiline-answers-phase-2.md`.
 
 Contract:
 
@@ -549,5 +550,4 @@ source, real Session content, production history database, or network service.
 No factual implementation question remains open. The user accepted ADR-0008 on
 2026-09-03, including Pi 0.84.3's disclosed external-editor/privacy/resource
 limits and the route-specific 32-KiB HTTP v1 relaxation with fail-closed
-mixed-version behavior. Phase 1 is complete. Phase 2 remains a separate
-high-risk authorization gate.
+mixed-version behavior. Both separately authorized phases are complete.

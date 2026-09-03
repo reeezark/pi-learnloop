@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createLearnCommand,
   EvidenceClientError,
+  type AssessmentResult,
   type EvidencePreviewResponse,
   type EvidenceSelection,
   type LearnClient,
@@ -78,6 +79,9 @@ test("manual Session review projects the newest 20 IDs, filters completed IDs, a
       },
       async input() {
         return "HEAD";
+      },
+      async editor() {
+        throw new Error("must not edit");
       },
       async confirm() {
         confirmations += 1;
@@ -245,6 +249,7 @@ test("Session identity stays out of the model request after the visible associat
     ui: {
       async select() { return selections.shift(); },
       async input() { return "HEAD"; },
+      async editor() { throw new Error("must not edit"); },
       async confirm() { events.push("confirm"); return true; },
       notify(message) {
         if (message.includes("User-selected association")) {
@@ -262,6 +267,76 @@ test("Session identity stays out of the model request after the visible associat
     { pi_version: "0.84.3", provider: "provider", id: "model", thinking_level: "off" },
   ]]);
   assert.doesNotMatch(JSON.stringify(questionCalls), /session-model-isolation/);
+});
+
+test("Session-bound review uses the same multiline editor without adding Session provenance to assessment input", async () => {
+  const piSessionID = "session-answer-isolation";
+  const selections = ["Pi Session", piSessionID, "Working tree against a base revision"];
+  const editorResults = ["session-private\nfirst", "second", "third"];
+  const editorCalls: Array<{ title: string; prefill?: string }> = [];
+  const modelRequests: unknown[] = [];
+  const notifications: string[] = [];
+  const client: SessionLearnClient = {
+    async preview() { throw new Error("must not use generic preview"); },
+    async previewPiSession() { return previewWithContinuation(); },
+    async reviewedPiSessionIDs() {
+      return { protocol_version: 1, reviewed_pi_session_ids: [] };
+    },
+    async questions(...args) {
+      modelRequests.push({ questions: args });
+      return sessionAssessableQuestions();
+    },
+    async assess(...args) {
+      modelRequests.push({ assessment: args });
+      return sessionCompleteAssessment();
+    },
+  };
+  const context: LearnCommandContext = {
+    cwd: "/work/repository",
+    hasUI: true,
+    model: { provider: "provider", id: "model" },
+    thinkingLevel: "off",
+    isProjectTrusted: () => true,
+    sessionManager: { getSessionDir: () => "/synthetic/sessions" },
+    ui: {
+      async select(_title, options) {
+        if (options.includes("Continue to sharing confirmation")) {
+          return "Continue to sharing confirmation";
+        }
+        return selections.shift();
+      },
+      async input() { return "HEAD"; },
+      async editor(title, prefill) {
+        editorCalls.push({ title, ...(prefill === undefined ? {} : { prefill }) });
+        return editorResults.shift();
+      },
+      async confirm() { return true; },
+      notify(message) { notifications.push(message); },
+    },
+  };
+
+  await createLearnCommand(client, "0.84.3", async () => [{ id: piSessionID }])("", context);
+
+  assert.deepEqual(editorCalls, [
+    { title: "Answer Q1" },
+    { title: "Answer Q2" },
+    { title: "Answer Q3" },
+  ]);
+  assert.deepEqual(modelRequests.at(-1), {
+    assessment: [
+      `as1-${"d".repeat(43)}`,
+      {
+        stage: "initial_answers",
+        answers: [
+          { question_id: "Q1", text: "session-private\nfirst" },
+          { question_id: "Q2", text: "second" },
+          { question_id: "Q3", text: "third" },
+        ],
+      },
+    ],
+  });
+  assert.doesNotMatch(JSON.stringify(modelRequests), new RegExp(piSessionID));
+  assert.doesNotMatch(JSON.stringify(notifications), /session-private/);
 });
 
 function syntheticSession(id: string) {
@@ -302,6 +377,7 @@ function gatedContext(options: { hasUI: boolean; trusted: boolean; selection?: s
         return options.selection;
       },
       async input() { return undefined; },
+      async editor() { throw new Error("must not edit"); },
       async confirm() { throw new Error("must not confirm"); },
       notify() {},
     },
@@ -317,6 +393,7 @@ function sessionContext(notifications: string[]): LearnCommandContext {
     ui: {
       async select() { return "Pi Session"; },
       async input() { throw new Error("must not request Git input"); },
+      async editor() { throw new Error("must not edit"); },
       async confirm() { throw new Error("must not confirm"); },
       notify(message) { notifications.push(message); },
     },
@@ -345,5 +422,39 @@ function previewWithContinuation(): EvidencePreviewResponse {
       id: `pc1-${"c".repeat(43)}`,
       expires_at: "2026-09-02T12:05:00Z",
     },
+  };
+}
+
+function sessionAssessableQuestions() {
+  return {
+    schema_version: 1 as const,
+    disposition: "questions" as const,
+    questions: [
+      { id: "Q1" as const, kind: "code_specific" as const, text: "Explain the behavior.", evidence_references: ["E001"] },
+      { id: "Q2" as const, kind: "code_specific" as const, text: "Which edge matters?", evidence_references: ["E001"] },
+      { id: "Q3" as const, kind: "go_backend" as const, text: "How should it be tested?", evidence_references: [] },
+    ],
+    assessment: {
+      available: true as const,
+      id: `as1-${"d".repeat(43)}`,
+      expires_at: "2026-09-03T12:30:00Z",
+    },
+  };
+}
+
+function sessionCompleteAssessment(): Extract<AssessmentResult, { label: string }> {
+  return {
+    turn: {
+      schema_version: 1,
+      disposition: "complete",
+      follow_up: null,
+      evaluations: [
+        { question_id: "Q1", verdict: "demonstrated", feedback: "First is grounded.", evidence_references: ["E001"] },
+        { question_id: "Q2", verdict: "demonstrated", feedback: "Second is grounded.", evidence_references: ["E001"] },
+        { question_id: "Q3", verdict: "demonstrated", feedback: "Third is grounded.", evidence_references: [] },
+      ],
+    },
+    label: "understood",
+    history: { saved: true, record_id: `lr1-${"e".repeat(43)}` },
   };
 }

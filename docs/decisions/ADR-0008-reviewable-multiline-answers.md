@@ -220,6 +220,16 @@ interfaces, while durable resume would require persisting source-bearing
 assessment inputs and resolving uncertain provider-call outcomes. Neither is
 needed to keep local answer editing behind the current sharing gate.
 
+## Implementation Status
+
+Phase 1 completed the LF-only user-answer validator split and the dedicated
+32-KiB assessment-route wire budget. Phase 2 completed the Pi editor adapter,
+one-time privacy/resource disclosure, fixed ID-only Q1/Q2/Q3 review loop,
+bounded invalid-draft recovery, multiline F1 path, fail-closed mixed-version
+message, and stable documentation on 2026-09-03. No dependency, request shape,
+schema/prompt version, persisted value, retry, fallback, or model capability was
+added.
+
 ## Consequences
 
 - Users can write structured multiline explanations and revise Q1/Q2/Q3 before
@@ -245,6 +255,6 @@ needed to keep local answer editing behind the current sharing gate.
 - No dependency, database migration, prompt/schema asset, evidence behavior,
   Session provenance, label rule, background worker, retry, or model capability
   is added.
-- Accepting this ADR does not authorize implementation. Each high-risk phase in
-  `plans/reviewable-multiline-answers.md` requires separate explicit
-  authorization.
+- Implementation proceeded only through the two separate high-risk phase
+  authorizations recorded by `plans/reviewable-multiline-answers.md`; both are
+  now complete.

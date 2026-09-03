@@ -364,6 +364,7 @@ export interface LearnCommandContext {
   ui: {
     select(title: string, options: string[]): Promise<string | undefined>;
     input(title: string, placeholder?: string): Promise<string | undefined>;
+    editor(title: string, prefill?: string): Promise<string | undefined>;
     confirm(title: string, message: string): Promise<boolean>;
     notify(message: string, type?: "info" | "warning" | "error"): void;
   };
@@ -374,6 +375,14 @@ const WORKING_TREE = "Working tree against a base revision";
 const PI_SESSION = "Pi Session";
 const MAX_PI_SESSION_CANDIDATES = 20;
 const DEFAULT_HISTORY_LIMIT = 20;
+const CONTINUE_TO_SHARING = "Continue to sharing confirmation";
+const CANCEL_ANSWER_REVIEW = "Cancel";
+const EDIT_ANSWER_ACTIONS = ["Edit Q1", "Edit Q2", "Edit Q3"];
+const ANSWER_REVIEW_OPTIONS = [CONTINUE_TO_SHARING, ...EDIT_ANSWER_ACTIONS, CANCEL_ANSWER_REVIEW];
+const INVALID_ANSWER_MESSAGE =
+  "Answers must be non-empty after trimming, valid UTF-8, at most 4 KiB, and contain no control characters other than line feeds.";
+const ANSWER_EDITOR_DISCLOSURE =
+  "LearnLoop does not save answer drafts and keeps accepted answers only for this interaction. If you explicitly invoke Pi's external-editor shortcut, Pi writes the current draft to a temporary prompt.md, starts your configured editor, and attempts cleanup on a best-effort basis. The editor or your environment may retain swap, backup, recovery, history, or telemetry artifacts. Pi may materialize an oversized draft before LearnLoop can enforce the 4 KiB answer limit. Declining sends no answer. Continue?";
 
 export function createLearnHistoryCommand(client: LearningHistoryClient) {
   return async function learnHistoryCommand(args: string, context: LearnCommandContext): Promise<void> {
@@ -589,6 +598,10 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", li
         return;
       }
 
+      const editorConfirmed = await context.ui.confirm("Use the multiline answer editor?", ANSWER_EDITOR_DISCLOSURE);
+      if (!editorConfirmed) {
+        return;
+      }
       const answers = await collectAnswers(questionSet, context);
       if (answers === undefined) {
         return;
@@ -607,7 +620,7 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", li
       });
       if (assessment.turn.disposition === "follow_up") {
         context.ui.notify(formatFollowUp(assessment.turn.follow_up), "info");
-        const followUpAnswer = await collectAnswer("Answer F1", assessment.turn.follow_up.text, context);
+        const followUpAnswer = await collectAnswer("Answer F1", context);
         if (followUpAnswer === undefined) {
           return;
         }
@@ -640,6 +653,13 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", li
       }
       if (error instanceof EvidenceClientError && error.code === "assessment_unavailable") {
         context.ui.notify("This assessment expired or was already submitted. Run /learn again to start a new assessment.", "warning");
+        return;
+      }
+      if (error instanceof EvidenceClientError && error.code === "invalid_request") {
+        context.ui.notify(
+          "Pi LearnLoop daemon rejected this request. Update the daemon and extension together, then run /learn again. The extension did not retry or alter an answer.",
+          "error",
+        );
         return;
       }
       context.ui.notify("Pi LearnLoop could not generate learning questions. Run /learn again.", "error");
@@ -709,25 +729,79 @@ function notifyPiSessionReviewQueryError(error: unknown, context: LearnCommandCo
 async function collectAnswers(questionSet: QuestionSet, context: LearnCommandContext): Promise<AssessmentAnswer[] | undefined> {
   const answers: AssessmentAnswer[] = [];
   for (const question of questionSet.questions) {
-    const answer = await collectAnswer(`Answer ${question.id}`, question.text, context);
+    const answer = await collectAnswer(`Answer ${question.id}`, context);
     if (answer === undefined) {
       return undefined;
     }
     answers.push({ question_id: question.id, text: answer });
   }
-  return answers;
+
+  while (true) {
+    const action = await context.ui.select("Review answers", [...ANSWER_REVIEW_OPTIONS]);
+    if (action === undefined || action === CANCEL_ANSWER_REVIEW) {
+      return undefined;
+    }
+    if (action === CONTINUE_TO_SHARING) {
+      return answers;
+    }
+    const answerIndex = EDIT_ANSWER_ACTIONS.indexOf(action);
+    if (answerIndex === -1 || answers[answerIndex] === undefined) {
+      context.ui.notify("Pi returned an unsupported answer review action. No answers were sent.", "error");
+      return undefined;
+    }
+
+    const previousAnswer = answers[answerIndex].text;
+    const replacement = await collectAnswer(`Answer Q${answerIndex + 1}`, context, previousAnswer);
+    if (replacement !== undefined) {
+      answers[answerIndex] = { ...answers[answerIndex], text: replacement };
+    }
+  }
 }
 
-async function collectAnswer(title: string, question: string, context: LearnCommandContext): Promise<string | undefined> {
-  const answer = (await context.ui.input(title, question))?.trim();
-  if (answer === undefined || answer === "") {
-    return undefined;
+async function collectAnswer(
+  title: string,
+  context: LearnCommandContext,
+  acceptedAnswer?: string,
+): Promise<string | undefined> {
+  while (true) {
+    const candidate = acceptedAnswer === undefined
+      ? await context.ui.editor(title)
+      : await context.ui.editor(title, acceptedAnswer);
+    if (candidate === undefined) {
+      return undefined;
+    }
+    const answer = candidate.trim();
+    if (!validAnswer(candidate, answer)) {
+      context.ui.notify(INVALID_ANSWER_MESSAGE, "warning");
+      continue;
+    }
+    return answer;
   }
-  if (Buffer.byteLength(answer, "utf8") > 4_096 || /[\u0000-\u001f\u007f-\u009f]/u.test(answer)) {
-    context.ui.notify("Answers must be at most 4 KiB and contain no control characters.", "warning");
-    return undefined;
+}
+
+function validAnswer(candidate: string, answer: string): boolean {
+  return (
+    answer !== "" &&
+    validUnicodeString(candidate) &&
+    Buffer.byteLength(answer, "utf8") <= 4_096 &&
+    !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u.test(candidate)
+  );
+}
+
+function validUnicodeString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (!(nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff)) {
+        return false;
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
   }
-  return answer;
+  return true;
 }
 
 function activeEvaluatorSelection(context: LearnCommandContext, piVersion: string): EvaluatorSelection | undefined {

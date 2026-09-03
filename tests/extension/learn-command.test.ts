@@ -61,6 +61,7 @@ test("manual learning history query renders source-free repository records witho
     ui: {
       async select() { throw new Error("must not select"); },
       async input() { throw new Error("must not collect input"); },
+      async editor() { throw new Error("must not edit"); },
       async confirm() { throw new Error("must not confirm a model call"); },
       notify(message, type) { notifications.push({ message, type }); },
     },
@@ -90,6 +91,7 @@ test("empty learning history is a normal informational result", async () => {
     ui: {
       async select() { throw new Error("must not select"); },
       async input() { throw new Error("must not collect input"); },
+      async editor() { throw new Error("must not edit"); },
       async confirm() { throw new Error("must not confirm"); },
       notify(message, type) { notifications.push({ message, type }); },
     },
@@ -119,6 +121,7 @@ test("unavailable learning history is explained without attempting repair", asyn
     ui: {
       async select() { throw new Error("must not select"); },
       async input() { throw new Error("must not collect input"); },
+      async editor() { throw new Error("must not edit"); },
       async confirm() { throw new Error("must not confirm"); },
       notify(message, type) { notifications.push({ message, type }); },
     },
@@ -195,6 +198,9 @@ test("manual commit range shows the selected evidence preview", async () => {
       },
       async input() {
         return inputs.shift();
+      },
+      async editor() {
+        throw new Error("must not edit");
       },
       async confirm() {
         return false;
@@ -283,6 +289,7 @@ test("unavailable context is shown and requires confirmation before continuation
     ui: {
       async select() { return "Working tree against a base revision"; },
       async input() { return "HEAD"; },
+      async editor() { throw new Error("must not edit"); },
       async confirm(_title, message) {
         events.push("confirm");
         assert.match(message, /completeness, omissions, and truncation shown above/);
@@ -323,6 +330,9 @@ test("daemon unavailability is reported with a recovery action", async () => {
       },
       async input() {
         return "HEAD";
+      },
+      async editor() {
+        throw new Error("must not edit");
       },
       async confirm() {
         return false;
@@ -366,6 +376,9 @@ test("unsupported or blank selections never reach the daemon", async () => {
       },
       async input() {
         return "HEAD";
+      },
+      async editor() {
+        throw new Error("must not edit");
       },
       async confirm() {
         return false;
@@ -417,6 +430,9 @@ test("persistent authentication failure explains how to recover", async () => {
       async input() {
         return "HEAD";
       },
+      async editor() {
+        throw new Error("must not edit");
+      },
       async confirm() {
         return false;
       },
@@ -456,6 +472,9 @@ test("invalid revisions are reported as a correctable selection", async () => {
       },
       async input(title) {
         return title.startsWith("Base") ? "missing-base" : "HEAD";
+      },
+      async editor() {
+        throw new Error("must not edit");
       },
       async confirm() {
         return false;
@@ -532,6 +551,9 @@ test("declining after the visible preview never sends a continuation request", a
       async input() {
         return "HEAD";
       },
+      async editor() {
+        throw new Error("must not edit");
+      },
       async confirm(title, message) {
         confirmations.push({ title, message });
         return false;
@@ -588,6 +610,9 @@ test("confirmation sends only the continuation and active model metadata, then r
       async input() {
         return "HEAD";
       },
+      async editor() {
+        throw new Error("must not edit");
+      },
       async confirm() {
         return true;
       },
@@ -632,6 +657,9 @@ test("missing supported model metadata disables continuation before confirmation
       async input() {
         return "HEAD";
       },
+      async editor() {
+        throw new Error("must not edit");
+      },
       async confirm() {
         confirmed = true;
         return true;
@@ -649,11 +677,13 @@ test("missing supported model metadata disables continuation before confirmation
   assert.match(notifications.at(-1) ?? "", /active model selection is unsupported/);
 });
 
-test("collects three answers, confirms sharing, and renders the Go-derived result", async () => {
+test("collects reviewable multiline answers, discloses editor limits, and renders the Go-derived result", async () => {
   const submissions: unknown[] = [];
   const notifications: string[] = [];
-  const inputs = ["HEAD", "first answer", "second answer", "third answer"];
+  const inputs = ["HEAD", "  first\nanswer  ", "second\nanswer", "third answer"];
   const confirmations: Array<{ title: string; message: string }> = [];
+  const editorCalls: Array<{ title: string; prefill?: string }> = [];
+  const selectCalls: Array<{ title: string; options: string[] }> = [];
   const client: LearnClient = {
     async preview() {
       return continuablePreview();
@@ -666,7 +696,7 @@ test("collects three answers, confirms sharing, and renders the Go-derived resul
       return completeAssessment();
     },
   };
-  const context = assessmentContext(inputs, confirmations, notifications);
+  const context = assessmentContext(inputs, confirmations, notifications, { editorCalls, selectCalls });
 
   await createLearnCommand(client, "0.84.3")("", context);
 
@@ -675,17 +705,261 @@ test("collects three answers, confirms sharing, and renders the Go-derived resul
     submission: {
       stage: "initial_answers",
       answers: [
-        { question_id: "Q1", text: "first answer" },
-        { question_id: "Q2", text: "second answer" },
+        { question_id: "Q1", text: "first\nanswer" },
+        { question_id: "Q2", text: "second\nanswer" },
         { question_id: "Q3", text: "third answer" },
       ],
     },
   }]);
-  assert.equal(confirmations.length, 2);
-  assert.match(confirmations[1]?.message ?? "", /same 31 bytes of displayed repository-derived evidence together with your three answers/);
-  assert.match(confirmations[1]?.message ?? "", /one additional evaluation/);
+  assert.deepEqual(editorCalls, [
+    { title: "Answer Q1" },
+    { title: "Answer Q2" },
+    { title: "Answer Q3" },
+  ]);
+  assert.deepEqual(selectCalls.at(-1), {
+    title: "Review answers",
+    options: ["Continue to sharing confirmation", "Edit Q1", "Edit Q2", "Edit Q3", "Cancel"],
+  });
+  assert.doesNotMatch(JSON.stringify(selectCalls), /first\nanswer|second\nanswer|third answer/);
+  assert.equal(confirmations.length, 3);
+  assert.equal(confirmations[1]?.title, "Use the multiline answer editor?");
+  assert.match(confirmations[1]?.message ?? "", /does not save answer drafts/);
+  assert.match(confirmations[1]?.message ?? "", /temporary prompt\.md/);
+  assert.match(confirmations[1]?.message ?? "", /best-effort/);
+  assert.match(confirmations[1]?.message ?? "", /swap, backup, recovery, history, or telemetry artifacts/);
+  assert.match(confirmations[1]?.message ?? "", /oversized draft before LearnLoop can enforce the 4 KiB answer limit/);
+  assert.match(confirmations[1]?.message ?? "", /Declining sends no answer/);
+  assert.match(confirmations[2]?.message ?? "", /same 31 bytes of displayed repository-derived evidence together with your three answers/);
+  assert.match(confirmations[2]?.message ?? "", /one additional evaluation/);
   assert.match(notifications.at(-1) ?? "", /Learning assessment: partial/);
   assert.match(notifications.at(-1) ?? "", /Q1 — demonstrated/);
+});
+
+test("reopens one accepted answer with bounded prefill and submits the valid replacement", async () => {
+  const submissions: unknown[] = [];
+  const inputs = ["HEAD", "first answer", "second answer", "third answer", "  revised\nsecond  "];
+  const editorCalls: Array<{ title: string; prefill?: string }> = [];
+  const reviewActions = ["Edit Q2", "Continue to sharing confirmation"];
+  const client: LearnClient = {
+    async preview() { return continuablePreview(); },
+    async questions() { return assessableQuestions(); },
+    async assess(id, submission) {
+      submissions.push({ id, submission });
+      return completeAssessment();
+    },
+  };
+
+  await createLearnCommand(client, "0.84.3")("", assessmentContext(inputs, [], [], {
+    editorCalls,
+    reviewActions,
+  }));
+
+  assert.deepEqual(editorCalls.at(-1), { title: "Answer Q2", prefill: "second answer" });
+  assert.deepEqual(submissions, [{
+    id: `as1-${"B".repeat(43)}`,
+    submission: {
+      stage: "initial_answers",
+      answers: [
+        { question_id: "Q1", text: "first answer" },
+        { question_id: "Q2", text: "revised\nsecond" },
+        { question_id: "Q3", text: "third answer" },
+      ],
+    },
+  }]);
+});
+
+test("invalid draft candidates reopen generically without prefill, disclosure, retention, or submission", async () => {
+  const invalidDrafts = [
+    "private-cr\rvalue",
+    "private-tab\tvalue",
+    "\rprivate-leading",
+    "private-trailing\t",
+    `private-c1${String.fromCodePoint(0x85)}value`,
+    " \n ",
+    "x".repeat(4_097),
+    "private-surrogate\ud800",
+  ];
+  const inputs = ["HEAD", ...invalidDrafts, "  approved\nanswer  ", "second", "third"];
+  const editorCalls: Array<{ title: string; prefill?: string }> = [];
+  const notifications: string[] = [];
+  const submissions: unknown[] = [];
+  const client: LearnClient = {
+    async preview() { return continuablePreview(); },
+    async questions() { return assessableQuestions(); },
+    async assess(_id, submission) {
+      submissions.push(submission);
+      return completeAssessment();
+    },
+  };
+
+  await createLearnCommand(client, "0.84.3")("", assessmentContext(inputs, [], notifications, { editorCalls }));
+
+  assert.deepEqual(editorCalls.slice(0, invalidDrafts.length + 1), Array.from(
+    { length: invalidDrafts.length + 1 },
+    () => ({ title: "Answer Q1" }),
+  ));
+  const warnings = notifications.filter((message) => message.includes("non-empty after trimming"));
+  assert.equal(warnings.length, invalidDrafts.length);
+  assert.ok(warnings.every((message) => message === warnings[0]));
+  assert.doesNotMatch(
+    JSON.stringify(notifications),
+    /private-cr|private-tab|private-leading|private-trailing|private-c1|private-surrogate/,
+  );
+  assert.deepEqual(submissions, [{
+    stage: "initial_answers",
+    answers: [
+      { question_id: "Q1", text: "approved\nanswer" },
+      { question_id: "Q2", text: "second" },
+      { question_id: "Q3", text: "third" },
+    ],
+  }]);
+});
+
+test("invalid edit recovery keeps the prior accepted answer and cancellation returns to review", async () => {
+  const inputs: Array<string | undefined> = [
+    "HEAD",
+    "original\nanswer",
+    "second",
+    "third",
+    "private-invalid\rreplacement",
+    undefined,
+  ];
+  const notifications: string[] = [];
+  const editorCalls: Array<{ title: string; prefill?: string }> = [];
+  const submissions: unknown[] = [];
+  const client: LearnClient = {
+    async preview() { return continuablePreview(); },
+    async questions() { return assessableQuestions(); },
+    async assess(_id, submission) {
+      submissions.push(submission);
+      return completeAssessment();
+    },
+  };
+
+  await createLearnCommand(client, "0.84.3")("", assessmentContext(inputs, [], notifications, {
+    editorCalls,
+    reviewActions: ["Edit Q1", "Continue to sharing confirmation"],
+  }));
+
+  assert.deepEqual(editorCalls.slice(-2), [
+    { title: "Answer Q1", prefill: "original\nanswer" },
+    { title: "Answer Q1", prefill: "original\nanswer" },
+  ]);
+  assert.equal(notifications.filter((message) => message.includes("non-empty after trimming")).length, 1);
+  assert.doesNotMatch(JSON.stringify(notifications), /private-invalid/);
+  assert.deepEqual(submissions, [{
+    stage: "initial_answers",
+    answers: [
+      { question_id: "Q1", text: "original\nanswer" },
+      { question_id: "Q2", text: "second" },
+      { question_id: "Q3", text: "third" },
+    ],
+  }]);
+});
+
+test("declining the editor disclosure or sharing confirmation sends no answer", async () => {
+  for (const scenario of [
+    { inputs: ["HEAD"], confirmationResults: [true, false], expectedConfirmations: 2 },
+    { inputs: ["HEAD", "first", "second", "third"], confirmationResults: [true, true, false], expectedConfirmations: 3 },
+  ]) {
+    let assessmentRequests = 0;
+    const confirmations: Array<{ title: string; message: string }> = [];
+    const editorCalls: Array<{ title: string; prefill?: string }> = [];
+    const client: LearnClient = {
+      async preview() { return continuablePreview(); },
+      async questions() { return assessableQuestions(); },
+      async assess() {
+        assessmentRequests += 1;
+        return completeAssessment();
+      },
+    };
+
+    await createLearnCommand(client, "0.84.3")("", assessmentContext(
+      [...scenario.inputs],
+      confirmations,
+      [],
+      { confirmationResults: [...scenario.confirmationResults], editorCalls },
+    ));
+
+    assert.equal(assessmentRequests, 0);
+    assert.equal(confirmations.length, scenario.expectedConfirmations);
+    if (scenario.expectedConfirmations === 2) {
+      assert.deepEqual(editorCalls, []);
+    }
+  }
+});
+
+test("cancelling Q1, Q2, or Q3 stops before review and assessment sharing", async () => {
+  for (let cancelIndex = 0; cancelIndex < 3; cancelIndex += 1) {
+    let assessmentRequests = 0;
+    const confirmations: Array<{ title: string; message: string }> = [];
+    const editorCalls: Array<{ title: string; prefill?: string }> = [];
+    const inputs: Array<string | undefined> = ["HEAD", ...Array.from({ length: cancelIndex }, (_, index) => `answer-${index}`), undefined];
+    const client: LearnClient = {
+      async preview() { return continuablePreview(); },
+      async questions() { return assessableQuestions(); },
+      async assess() {
+        assessmentRequests += 1;
+        return completeAssessment();
+      },
+    };
+
+    await createLearnCommand(client, "0.84.3")("", assessmentContext(inputs, confirmations, [], { editorCalls }));
+
+    assert.equal(assessmentRequests, 0);
+    assert.equal(confirmations.length, 2);
+    assert.equal(editorCalls.length, cancelIndex + 1);
+  }
+});
+
+test("cancelling or dismissing answer review discards all local answers", async () => {
+  for (const reviewAction of ["Cancel", undefined]) {
+    let assessmentRequests = 0;
+    const confirmations: Array<{ title: string; message: string }> = [];
+    const client: LearnClient = {
+      async preview() { return continuablePreview(); },
+      async questions() { return assessableQuestions(); },
+      async assess() {
+        assessmentRequests += 1;
+        return completeAssessment();
+      },
+    };
+
+    await createLearnCommand(client, "0.84.3")("", assessmentContext(
+      ["HEAD", "first", "second", "third"],
+      confirmations,
+      [],
+      { reviewActions: [reviewAction] },
+    ));
+
+    assert.equal(assessmentRequests, 0);
+    assert.equal(confirmations.length, 2);
+  }
+});
+
+test("an old daemon invalid_request fails closed without retry or answer disclosure", async () => {
+  const privateAnswer = "private multiline\nanswer";
+  const notifications: string[] = [];
+  let assessmentRequests = 0;
+  const client: LearnClient = {
+    async preview() { return continuablePreview(); },
+    async questions() { return assessableQuestions(); },
+    async assess() {
+      assessmentRequests += 1;
+      throw new EvidenceClientError("invalid_request", `old daemon rejected ${privateAnswer}`);
+    },
+  };
+
+  await createLearnCommand(client, "0.84.3")("", assessmentContext(
+    ["HEAD", privateAnswer, "second", "third"],
+    [],
+    notifications,
+  ));
+
+  assert.equal(assessmentRequests, 1);
+  assert.match(notifications.at(-1) ?? "", /Update the daemon and extension together/);
+  assert.match(notifications.at(-1) ?? "", /did not retry or alter an answer/);
+  assert.doesNotMatch(JSON.stringify(notifications), /private multiline|old daemon rejected/);
 });
 
 test("warns once when assessment succeeds but local history is unavailable", async () => {
@@ -723,10 +997,12 @@ test("warns once when assessment succeeds but local history is unavailable", asy
   });
 });
 
-test("submits one answered F1 and never asks for a second follow-up", async () => {
+test("submits one multiline F1 through the same editor and never asks for a second follow-up", async () => {
   const submissions: unknown[] = [];
   const notifications: string[] = [];
-  const inputs = ["HEAD", "first", "second", "third", "follow-up answer"];
+  const inputs = ["HEAD", "first", "second", "third", "  follow-up\nanswer  "];
+  const editorCalls: Array<{ title: string; prefill?: string }> = [];
+  const selectCalls: Array<{ title: string; options: string[] }> = [];
   let calls = 0;
   const client: LearnClient = {
     async preview() {
@@ -756,17 +1032,53 @@ test("submits one answered F1 and never asks for a second follow-up", async () =
       return completeAssessment();
     },
   };
-  const context = assessmentContext(inputs, [], notifications);
+  const context = assessmentContext(inputs, [], notifications, { editorCalls, selectCalls });
 
   await createLearnCommand(client, "0.84.3")("", context);
 
   assert.equal(submissions.length, 2);
   assert.deepEqual(submissions[1], {
     id: `as1-${"B".repeat(43)}`,
-    submission: { stage: "follow_up_answer", follow_up_id: "F1", answer: "follow-up answer" },
+    submission: { stage: "follow_up_answer", follow_up_id: "F1", answer: "follow-up\nanswer" },
   });
+  assert.deepEqual(editorCalls.at(-1), { title: "Answer F1" });
+  assert.equal(selectCalls.filter(({ title }) => title === "Review answers").length, 1);
   assert.ok(notifications.some((message) => /Follow-up for Q1/.test(message)));
   assert.match(notifications.at(-1) ?? "", /Learning assessment: partial/);
+});
+
+test("invalid F1 reopens generically and cancellation sends no follow-up request", async () => {
+  const submissions: unknown[] = [];
+  const notifications: string[] = [];
+  const editorCalls: Array<{ title: string; prefill?: string }> = [];
+  const inputs: Array<string | undefined> = ["HEAD", "first", "second", "third", "private\rF1", undefined];
+  const client: LearnClient = {
+    async preview() { return continuablePreview(); },
+    async questions() { return assessableQuestions(); },
+    async assess(_id, submission) {
+      submissions.push(submission);
+      return {
+        turn: {
+          schema_version: 1,
+          disposition: "follow_up",
+          follow_up: {
+            id: "F1",
+            target_question_id: "Q1",
+            text: "Which selected branch supports that answer?",
+            evidence_references: ["E001"],
+          },
+          evaluations: [],
+        },
+      };
+    },
+  };
+
+  await createLearnCommand(client, "0.84.3")("", assessmentContext(inputs, [], notifications, { editorCalls }));
+
+  assert.equal(submissions.length, 1);
+  assert.deepEqual(editorCalls.slice(-2), [{ title: "Answer F1" }, { title: "Answer F1" }]);
+  assert.equal(notifications.filter((message) => message.includes("non-empty after trimming")).length, 1);
+  assert.doesNotMatch(JSON.stringify(notifications), /private/);
 });
 
 test("cancelling an answer stops locally before assessment confirmation or submission", async () => {
@@ -791,7 +1103,7 @@ test("cancelling an answer stops locally before assessment confirmation or submi
   await createLearnCommand(client, "0.84.3")("", context);
 
   assert.equal(assessmentRequests, 0);
-  assert.equal(confirmations.length, 1);
+  assert.equal(confirmations.length, 2);
   assert.match(notifications.at(-1) ?? "", /Learning questions/);
 });
 
@@ -827,6 +1139,12 @@ function assessmentContext(
   inputs: Array<string | undefined>,
   confirmations: Array<{ title: string; message: string }>,
   notifications: string[],
+  options: {
+    reviewActions?: Array<string | undefined>;
+    editorCalls?: Array<{ title: string; prefill?: string }>;
+    selectCalls?: Array<{ title: string; options: string[] }>;
+    confirmationResults?: boolean[];
+  } = {},
 ): LearnCommandContext {
   return {
     cwd: "/work/repository",
@@ -835,14 +1153,28 @@ function assessmentContext(
     thinkingLevel: "off",
     isProjectTrusted: () => true,
     ui: {
-      async select() {
+      async select(title, choices) {
+        options.selectCalls?.push({ title, options: [...choices] });
+        if (choices.includes("Continue to sharing confirmation")) {
+          if (options.reviewActions !== undefined && options.reviewActions.length > 0) {
+            return options.reviewActions.shift();
+          }
+          return "Continue to sharing confirmation";
+        }
         return "Working tree against a base revision";
       },
       async input() {
         return inputs.shift();
       },
+      async editor(title, prefill) {
+        options.editorCalls?.push({ title, ...(prefill === undefined ? {} : { prefill }) });
+        return inputs.shift();
+      },
       async confirm(title, message) {
         confirmations.push({ title, message });
+        if (options.confirmationResults !== undefined && options.confirmationResults.length > 0) {
+          return options.confirmationResults.shift() ?? false;
+        }
         return true;
       },
       notify(message) {
