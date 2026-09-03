@@ -35,6 +35,32 @@ func TestNewInitialAssessmentInput(t *testing.T) {
 		t.Fatalf("NewInitialAssessmentInput() retained caller aliases: %#v", got)
 	}
 
+	t.Run("accepts and preserves LF-only answers for v1 and v2", func(t *testing.T) {
+		v1Input, v1Questions, v1Answers := validAssessmentValues(t)
+		v2Input, v2Questions, v2Answers := validV2AssessmentValues(t)
+		for _, test := range []struct {
+			name      string
+			input     evaluator.Input
+			questions evaluator.QuestionSet
+			answers   []evaluator.AssessmentAnswer
+		}{
+			{name: "v1", input: v1Input, questions: v1Questions, answers: v1Answers},
+			{name: "v2", input: v2Input, questions: v2Questions, answers: v2Answers},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				want := "first line\nsecond line"
+				test.answers[0].Text = want
+				result, err := evaluator.NewInitialAssessmentInput(test.input, test.questions, test.answers)
+				if err != nil {
+					t.Fatalf("NewInitialAssessmentInput() error = %v", err)
+				}
+				if result.Answers[0].Text != want {
+					t.Fatalf("answer = %q, want exact LF-preserved %q", result.Answers[0].Text, want)
+				}
+			})
+		}
+	})
+
 	tests := []struct {
 		name   string
 		mutate func(*evaluator.Input, *evaluator.QuestionSet, *[]evaluator.AssessmentAnswer)
@@ -52,11 +78,29 @@ func TestNewInitialAssessmentInput(t *testing.T) {
 		{name: "wrong answer ID", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
 			(*answers)[1].QuestionID = "Q9"
 		}},
-		{name: "empty answer", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
-			(*answers)[0].Text = "   "
+		{name: "whitespace-only multiline answer", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
+			(*answers)[0].Text = " \n \n "
 		}},
-		{name: "answer control character", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
-			(*answers)[0].Text = "first line\nsecond line"
+		{name: "answer CR", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
+			(*answers)[0].Text = "first line\rsecond line"
+		}},
+		{name: "answer CRLF", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
+			(*answers)[0].Text = "first line\r\nsecond line"
+		}},
+		{name: "answer tab", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
+			(*answers)[0].Text = "first\tsecond"
+		}},
+		{name: "answer NUL", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
+			(*answers)[0].Text = "first\x00second"
+		}},
+		{name: "answer DEL", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
+			(*answers)[0].Text = "first\x7fsecond"
+		}},
+		{name: "answer C1 control", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
+			(*answers)[0].Text = "first\u0085second"
+		}},
+		{name: "answer invalid UTF-8", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
+			(*answers)[0].Text = string([]byte{0xff})
 		}},
 		{name: "oversized answer", mutate: func(_ *evaluator.Input, _ *evaluator.QuestionSet, answers *[]evaluator.AssessmentAnswer) {
 			(*answers)[0].Text = strings.Repeat("a", evaluator.MaxAnswerTextBytes+1)
@@ -93,6 +137,17 @@ func TestNewFollowUpAssessmentInput(t *testing.T) {
 		t.Fatalf("NewFollowUpAssessmentInput() retained caller aliases: %#v", got)
 	}
 
+	t.Run("accepts and preserves an LF-only follow-up answer", func(t *testing.T) {
+		want := "The empty-name branch\nreturns ErrEmpty."
+		result, err := evaluator.NewFollowUpAssessmentInput(validInitialAssessmentInput(t), validFollowUpQuestion(), want)
+		if err != nil {
+			t.Fatalf("NewFollowUpAssessmentInput() error = %v", err)
+		}
+		if result.FollowUp == nil || result.FollowUp.Answer != want {
+			t.Fatalf("follow-up = %#v, want exact LF-preserved answer %q", result.FollowUp, want)
+		}
+	})
+
 	tests := []struct {
 		name         string
 		mutateInput  func(*evaluator.AssessmentInput)
@@ -112,6 +167,8 @@ func TestNewFollowUpAssessmentInput(t *testing.T) {
 			question.EvidenceReferences = []string{"E001", "E001"}
 		}},
 		{name: "empty follow-up answer", mutateFollow: func(_ *evaluator.FollowUpQuestion, answer *string) { *answer = " " }},
+		{name: "follow-up answer CR", mutateFollow: func(_ *evaluator.FollowUpQuestion, answer *string) { *answer = "first\rsecond" }},
+		{name: "follow-up answer tab", mutateFollow: func(_ *evaluator.FollowUpQuestion, answer *string) { *answer = "first\tsecond" }},
 		{name: "oversized follow-up answer", mutateFollow: func(_ *evaluator.FollowUpQuestion, answer *string) {
 			*answer = strings.Repeat("a", evaluator.MaxAnswerTextBytes+1)
 		}},
@@ -201,6 +258,7 @@ func TestParseAssessmentTurn(t *testing.T) {
 		{name: "wrong follow-up ID", content: strings.Replace(validFollowUpTurnJSON(), `"id":"F1"`, `"id":"F2"`, 1)},
 		{name: "wrong follow-up target", content: strings.Replace(validFollowUpTurnJSON(), `"target_question_id":"Q1"`, `"target_question_id":"Q9"`, 1)},
 		{name: "unknown follow-up reference", content: strings.Replace(validFollowUpTurnJSON(), `"evidence_references":["E001"]`, `"evidence_references":["E999"]`, 1)},
+		{name: "control character in follow-up text", content: strings.Replace(validFollowUpTurnJSON(), `"text":"Which exact branch supports your first answer?"`, `"text":"first line\nsecond line"`, 1)},
 		{name: "complete with follow-up", content: strings.Replace(validCompleteAssessmentJSON(), `"follow_up":null`, `"follow_up":{"id":"F1","target_question_id":"Q1","text":"Why?","evidence_references":["E001"]}`, 1)},
 		{name: "wrong evaluation count", content: `{"schema_version":1,"disposition":"complete","follow_up":null,"evaluations":[]}`},
 		{name: "wrong evaluation ID", content: strings.Replace(validCompleteAssessmentJSON(), `"question_id":"Q2"`, `"question_id":"Q9"`, 1)},
@@ -334,6 +392,33 @@ func validAssessmentValues(t *testing.T) (evaluator.Input, evaluator.QuestionSet
 		{QuestionID: "Q1", Text: "Validate returns ErrEmpty when name is empty."},
 		{QuestionID: "Q2", Text: "The success branch returns nil after validation."},
 		{QuestionID: "Q3", Text: "A table-driven test can cover empty and non-empty names."},
+	}
+	return input, questions, answers
+}
+
+func validV2AssessmentValues(t *testing.T) (evaluator.Input, evaluator.QuestionSet, []evaluator.AssessmentAnswer) {
+	t.Helper()
+	input := validV2Input(t)
+	references := v2References(input)
+	contextReference := ""
+	for _, reference := range references {
+		if strings.HasPrefix(reference, "C") {
+			contextReference = reference
+			break
+		}
+	}
+	if contextReference == "" {
+		t.Fatalf("v2 references = %v, want a context reference", references)
+	}
+	questionJSON := `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"What does the selected context prove?","evidence_references":["` + contextReference + `"]},{"id":"Q2","kind":"code_specific","text":"How does the changed code use that context?","evidence_references":["` + contextReference + `"]},{"id":"Q3","kind":"go_backend","text":"Why report incomplete type evidence?","evidence_references":[]}]}`
+	questions, err := evaluator.ParseQuestionSet([]byte(questionJSON), references)
+	if err != nil {
+		t.Fatalf("ParseQuestionSet(v2 references): %v", err)
+	}
+	answers := []evaluator.AssessmentAnswer{
+		{QuestionID: "Q1", Text: "The context item is a selected-snapshot declaration."},
+		{QuestionID: "Q2", Text: "The recorded relation connects the changed code to it."},
+		{QuestionID: "Q3", Text: "Explicit omissions prevent unsupported conclusions."},
 	}
 	return input, questions, answers
 }

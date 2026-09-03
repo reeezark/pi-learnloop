@@ -27,7 +27,7 @@ import (
 const (
 	maxRequestBytes              = 16 * 1024
 	maxQuestionSetRequestBytes   = 4 * 1024
-	maxAssessmentRequestBytes    = 16 * 1024
+	maxAssessmentRequestBytes    = 32 * 1024
 	maxHistoryQueryRequestBytes  = 4 * 1024
 	evidenceTimeout              = 30 * time.Second
 	evaluationTimeout            = 120 * time.Second

@@ -165,7 +165,7 @@ func TestAssessmentTurnFollowUpLifecycle(t *testing.T) {
 		t.Fatalf("initial assessment = %#v, want F1 without label", firstResult)
 	}
 
-	final := serveAssessmentRequest(handler, []byte(`{"assessment_id":"`+assessmentID+`","stage":"follow_up_answer","follow_up_id":"F1","answer":"The empty-name branch returns ErrEmpty."}`), true)
+	final := serveAssessmentRequest(handler, []byte(`{"assessment_id":"`+assessmentID+`","stage":"follow_up_answer","follow_up_id":"F1","answer":"The empty-name branch\nreturns ErrEmpty."}`), true)
 	if final.Code != http.StatusOK {
 		t.Fatalf("follow-up status = %d, want %d; body = %s", final.Code, http.StatusOK, final.Body.String())
 	}
@@ -185,6 +185,46 @@ func TestAssessmentTurnFollowUpLifecycle(t *testing.T) {
 		t.Fatalf("replay status = %d, want %d; body = %s", replay.Code, http.StatusConflict, replay.Body.String())
 	}
 	assertRecorderErrorCode(t, replay, "assessment_unavailable")
+}
+
+func TestAssessmentTurnAcceptsMultilineInitialAnswers(t *testing.T) {
+	handler, assessmentID := assessmentHandler(t, evaluator.DeterministicAssessmentEvaluator{})
+	body := []byte(`{"assessment_id":"` + assessmentID + `","stage":"initial_answers","answers":[{"question_id":"Q1","text":"first line\nsecond line"},{"question_id":"Q2","text":"second answer"},{"question_id":"Q3","text":"third answer"}]}`)
+	response := serveAssessmentRequest(handler, body, true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("multiline initial status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+}
+
+func TestAssessmentTurnAcceptsCanonicalEscapedAnswersWithinDedicatedBudget(t *testing.T) {
+	if maxAssessmentRequestBytes != 32*1024 {
+		t.Fatalf("maxAssessmentRequestBytes = %d, want %d", maxAssessmentRequestBytes, 32*1024)
+	}
+	handler, assessmentID := assessmentHandler(t, evaluator.DeterministicAssessmentEvaluator{})
+	answer := strings.Repeat(`"`, evaluator.MaxAnswerTextBytes)
+	body, err := json.Marshal(struct {
+		AssessmentID string                       `json:"assessment_id"`
+		Stage        string                       `json:"stage"`
+		Answers      []evaluator.AssessmentAnswer `json:"answers"`
+	}{
+		AssessmentID: assessmentID,
+		Stage:        "initial_answers",
+		Answers: []evaluator.AssessmentAnswer{
+			{QuestionID: "Q1", Text: answer},
+			{QuestionID: "Q2", Text: answer},
+			{QuestionID: "Q3", Text: answer},
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(large canonical request): %v", err)
+	}
+	if len(body) <= 16*1024 || len(body) > maxAssessmentRequestBytes {
+		t.Fatalf("large canonical request size = %d, want > %d and <= %d", len(body), 16*1024, maxAssessmentRequestBytes)
+	}
+	response := serveAssessmentRequest(handler, body, true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("large canonical request status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
 }
 
 func TestAssessmentTurnStrictFailuresDoNotConsumeState(t *testing.T) {

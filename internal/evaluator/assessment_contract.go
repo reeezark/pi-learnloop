@@ -131,7 +131,7 @@ func NewFollowUpAssessmentInput(initial AssessmentInput, question FollowUpQuesti
 	if err := validateFollowUpQuestion(question, initial.QuestionSet, references); err != nil {
 		return AssessmentInput{}, invalidInput(err)
 	}
-	if err := validateAssessmentText(answer, MaxAnswerTextBytes, "follow-up answer"); err != nil {
+	if err := validateAnswerText(answer, MaxAnswerTextBytes, "follow-up answer"); err != nil {
 		return AssessmentInput{}, invalidInput(err)
 	}
 
@@ -269,7 +269,7 @@ func validateAssessmentInput(input AssessmentInput) error {
 		if err := validateFollowUpQuestion(input.FollowUp.Question, input.QuestionSet, references); err != nil {
 			return err
 		}
-		if err := validateAssessmentText(input.FollowUp.Answer, MaxAnswerTextBytes, "follow-up answer"); err != nil {
+		if err := validateAnswerText(input.FollowUp.Answer, MaxAnswerTextBytes, "follow-up answer"); err != nil {
 			return err
 		}
 	default:
@@ -394,7 +394,7 @@ func cloneValidatedAnswers(answers []AssessmentAnswer) ([]AssessmentAnswer, erro
 		if answer.QuestionID != fmt.Sprintf("Q%d", index+1) {
 			return nil, fmt.Errorf("answer %d has an invalid question ID", index+1)
 		}
-		if err := validateAssessmentText(answer.Text, MaxAnswerTextBytes, fmt.Sprintf("answer %d", index+1)); err != nil {
+		if err := validateAnswerText(answer.Text, MaxAnswerTextBytes, fmt.Sprintf("answer %d", index+1)); err != nil {
 			return nil, err
 		}
 		owned[index] = answer
@@ -467,6 +467,14 @@ func validateAssessmentReferences(values, allowedValues []string, required bool)
 }
 
 func validateAssessmentText(value string, maximumBytes int, field string) error {
+	return validateBoundedText(value, maximumBytes, field, false)
+}
+
+func validateAnswerText(value string, maximumBytes int, field string) error {
+	return validateBoundedText(value, maximumBytes, field, true)
+}
+
+func validateBoundedText(value string, maximumBytes int, field string, allowLineFeed bool) error {
 	if strings.TrimSpace(value) == "" || !utf8.ValidString(value) {
 		return fmt.Errorf("%s is empty or invalid UTF-8", field)
 	}
@@ -474,7 +482,7 @@ func validateAssessmentText(value string, maximumBytes int, field string) error 
 		return fmt.Errorf("%s exceeds %d bytes", field, maximumBytes)
 	}
 	for _, character := range value {
-		if unicode.IsControl(character) {
+		if unicode.IsControl(character) && !(allowLineFeed && character == '\n') {
 			return fmt.Errorf("%s contains a control character", field)
 		}
 	}
