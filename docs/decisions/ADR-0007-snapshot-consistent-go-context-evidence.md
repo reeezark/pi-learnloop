@@ -65,9 +65,11 @@ Pi LearnLoop will treat bounded Go package, type, and
 direct-dependency context as first-class evidence from the exact selected Git
 snapshot.
 
-This decision was accepted on 2026-09-02. The same authorization starts Phase 1
-and explicitly permits direct `golang.org/x/mod v0.19.0`; it does not authorize
-later routes, evaluator contracts, prompts, extension behavior, or phases.
+This decision was accepted on 2026-09-02. The same authorization started Phase 1
+and explicitly permitted direct `golang.org/x/mod v0.19.0`. Phase 2 routes,
+evaluator contracts, and prompts were separately authorized and completed on
+2026-09-03. Phase 3 extension behavior remains separately gated and is not
+authorized by this ADR alone.
 
 ### 1. Preserve and deepen the evidence module
 

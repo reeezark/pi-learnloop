@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "go-context-interface-relation",
+  "case_version": "1.0.0",
+  "category": "evidence_fidelity",
+  "description": "A recorded type-checked implements relation does not prove runtime dispatch or unrecorded implementations.",
+  "stimulus": {
+    "evidence": [
+      {"ref": "E001", "kind": "code", "synthetic": true, "content": "type Worker struct{}"},
+      {"ref": "C001", "kind": "code", "synthetic": true, "content": "type Runner interface { Run() error }; E001 implements C001; strength=type_checked"}
+    ],
+    "candidate_output": {"claim": "Worker is always selected at runtime and is the only Runner implementation."}
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": ["limits-the-claim-to-the-recorded-relation", "rejects-runtime-dispatch-inference"],
+    "required_evidence_refs": ["E001", "C001"],
+    "forbidden_claims": ["worker-is-always-selected", "worker-is-the-only-implementation"]
+  },
+  "tags": ["go-context", "interface", "type-checked"]
+}

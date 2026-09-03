@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "go-context-import-only",
+  "case_version": "1.0.0",
+  "category": "evidence_fidelity",
+  "description": "A changed import is usable only as the bounded syntactic identity shown in context evidence.",
+  "stimulus": {
+    "evidence": [
+      {"ref": "C001", "kind": "metadata", "synthetic": true, "content": "changed_import: import example.invalid/queue; relation strength: syntactic"}
+    ],
+    "candidate_output": {"question": "Which package identity changed?", "evidence_references": ["C001"]}
+  },
+  "expectations": {
+    "decision": "accept",
+    "required_signals": ["uses-the-changed-import-reference", "does-not-claim-imported-behavior"],
+    "required_evidence_refs": ["C001"],
+    "forbidden_claims": ["the-imported-package-runtime-behavior-is-known", "transitive-dependencies-were-loaded"]
+  },
+  "tags": ["go-context", "import-only", "syntactic"]
+}

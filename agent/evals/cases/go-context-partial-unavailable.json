@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "go-context-partial-unavailable",
+  "case_version": "1.0.0",
+  "category": "insufficient_evidence",
+  "description": "Partial or unavailable context must not be filled with outside type facts.",
+  "stimulus": {
+    "evidence": [
+      {"ref": "E001", "kind": "code", "synthetic": true, "content": "func Start(client external.Client) error"},
+      {"ref": "C001", "kind": "metadata", "synthetic": true, "content": "status=partial; omission=external_type_unavailable"}
+    ],
+    "candidate_output": {"claim": "external.Client retries exactly three times."}
+  },
+  "expectations": {
+    "decision": "abstain",
+    "required_signals": ["names-the-explicit-omission", "does-not-fill-missing-type-facts"],
+    "required_evidence_refs": ["E001", "C001"],
+    "forbidden_claims": ["external-client-retry-count", "context-is-complete"]
+  },
+  "tags": ["go-context", "partial", "unavailable"]
+}

@@ -63,10 +63,14 @@ func Run(ctx context.Context, config Config) error {
 	}
 	var questionEvaluator evaluator.QuestionEvaluator
 	var assessmentEvaluator evaluator.AssessmentEvaluator
-	if piEvaluator, err := evaluator.NewPiRPCEvaluator(ctx, prompts.EvaluatorQuestionGenerationV1()); err == nil {
+	if piEvaluator, err := evaluator.NewVersionedPiRPCEvaluator(
+		ctx, prompts.EvaluatorQuestionGenerationV1(), prompts.EvaluatorQuestionGenerationV2(),
+	); err == nil {
 		questionEvaluator = piEvaluator
 	}
-	if piEvaluator, err := evaluator.NewPiRPCAssessmentEvaluator(ctx, prompts.EvaluatorAnswerAssessmentV1()); err == nil {
+	if piEvaluator, err := evaluator.NewVersionedPiRPCAssessmentEvaluator(
+		ctx, prompts.EvaluatorAnswerAssessmentV1(), prompts.EvaluatorAnswerAssessmentV2(),
+	); err == nil {
 		assessmentEvaluator = piEvaluator
 	}
 

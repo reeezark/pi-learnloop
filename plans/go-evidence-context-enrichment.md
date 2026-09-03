@@ -2,7 +2,7 @@
 id: go-evidence-context-enrichment
 status: active
 risk: high
-current_phase: 2
+current_phase: 3
 phase_status: awaiting_approval
 updated: 2026-09-03
 ---
@@ -55,7 +55,9 @@ Before Phase 1 begins:
 The loader, build-configuration, external-fact, dependency, budget, and omission
 choices are resolved below. Phase 1 completed and validated the selected
 internal design without any route, evaluator, prompt, extension, database, or
-user-visible behavior change. Phase 2 is not authorized.
+user-visible behavior change. Phase 1 was committed and pushed as `477c1aa` on
+2026-09-03. Phase 2 was explicitly authorized and completed on 2026-09-03.
+Phase 3 is not authorized.
 
 Each later phase also requires explicit authorization after the previous phase
 has completed and been verified.
@@ -792,6 +794,37 @@ prompt versions.
   assessment, history start, logs, and serialized errors.
 - New prompts and schemas pass governance invariants and adversarial eval cases.
 - No extension behavior or database schema changes.
+
+### Phase 2 Result
+
+Completed and finally verified on 2026-09-03:
+
+- Added the two separate strict authenticated preview routes. They run the
+  accepted internal Go-context policy and expose every model-visible context
+  item, relation, build value, fixed limit, completeness state, omission, and
+  truncation count without changing either existing preview route.
+- Extended the existing bounded continuation store with a private v1/v2
+  contract marker, owned Go-context copy, and accounting for every retained
+  repository-derived context byte. Generic and Session-bound paths
+  select their bundle/input/prompt version solely from this daemon-owned state;
+  the client cannot inject a mode and the repository is not reread.
+- Added pure `evidence-bundle@2`, `evaluator-input@2`, and
+  `evaluator-assessment-input@2` contracts with deterministic full-manifest and
+  content hashes, genuine import-only evidence support, detached validation,
+  and the fixed complete-input byte cap. Question-set and assessment-turn
+  outputs remain unchanged at v1.
+- Added and embedded immutable question and assessment prompt v2 assets, plus
+  strict documentation schemas, a supplemental local-only evidence policy, and
+  synthetic adversarial fixtures. Production Pi adapters choose v1 or v2 from
+  the validated runtime schema and retain the existing no-tools process
+  isolation.
+- Proved exact retained evidence after working-tree mutation, single-use and
+  expiry behavior, cancellation, strict request rejection, v1 compatibility,
+  Pi Session isolation through question/assessment/error/history paths, and
+  source-free completion history without a database migration. The daemon has
+  no request logging sink; no new logging path was added.
+- No extension, dependency, Go baseline, database schema, existing route, or
+  existing output-protocol change was made.
 
 ### Stop Condition
 

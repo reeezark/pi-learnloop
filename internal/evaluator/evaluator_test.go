@@ -35,6 +35,24 @@ func TestDeterministicEvaluatorProducesValidatedQuestionShape(t *testing.T) {
 	}
 }
 
+func TestDeterministicEvaluatorAcceptsDaemonOwnedV2References(t *testing.T) {
+	input := Input{
+		SchemaVersion: InputSchemaVersionV2,
+		EvidenceBundle: EvidenceBundle{
+			EvidenceCount: 1,
+			GoContext:     &EvidenceGoContext{Items: []EvidenceContextItem{{Reference: "C001"}}},
+		},
+	}
+	selection := ModelSelection{PiVersion: SupportedPiVersion, Provider: "provider", ModelID: "model", ThinkingLevel: "off"}
+	result, err := (DeterministicEvaluator{}).Evaluate(context.Background(), input, selection)
+	if err != nil {
+		t.Fatalf("Evaluate(v2): %v", err)
+	}
+	if got := result.Questions[0].EvidenceReferences; len(got) != 1 || got[0] != "C001" {
+		t.Fatalf("Q1 references = %#v, want C001", got)
+	}
+}
+
 func TestDeterministicEvaluatorRejectsInvalidSelectionAndCancellation(t *testing.T) {
 	input := Input{SchemaVersion: InputSchemaVersion, EvidenceBundle: EvidenceBundle{Items: []EvidenceItem{{Reference: "E001"}}}}
 	selection := ModelSelection{PiVersion: SupportedPiVersion, Provider: "-unsafe", ModelID: "model", ThinkingLevel: "off"}

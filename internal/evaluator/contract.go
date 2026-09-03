@@ -75,6 +75,7 @@ type EvidenceBundle struct {
 	Files            []EvidenceFile     `json:"files"`
 	Items            []EvidenceItem     `json:"items"`
 	Truncation       EvidenceTruncation `json:"truncation"`
+	GoContext        *EvidenceGoContext `json:"go_context,omitempty"`
 }
 
 type EvidenceLimits struct {

@@ -50,3 +50,19 @@ Assessment-specific cases reuse this development schema and remain synthetic sti
 - malformed complete-assessment output.
 
 These cases define observable review expectations. They do not make the draft assessment prompt callable and do not contact or grade a live model.
+
+## Go-context coverage
+
+The enriched evaluator fixtures remain synthetic and reuse the same development
+schema. They cover:
+
+- import-only evidence without inventing imported behavior;
+- type-checked interface relationships without runtime-dispatch inference;
+- explicit partial or unavailable external facts;
+- instruction-like text inside unchanged context evidence;
+- output-budget exhaustion and incomplete graph coverage; and
+- rejection of Pi Session provenance in model-visible structured content.
+
+These cases constrain `evaluator-input@2` and
+`evaluator-assessment-input@2`. They do not change the v1 question-set or
+assessment-turn output contracts.

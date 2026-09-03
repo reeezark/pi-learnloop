@@ -24,13 +24,9 @@ func (DeterministicEvaluator) Evaluate(ctx context.Context, input Input, selecti
 	if err := ValidateModelSelection(selection); err != nil {
 		return QuestionSet{}, err
 	}
-	if input.SchemaVersion != InputSchemaVersion || len(input.EvidenceBundle.Items) == 0 {
+	references, err := runtimeInputReferences(input)
+	if err != nil {
 		return QuestionSet{}, invalidInput(errors.New("deterministic evaluator requires validated evidence input"))
-	}
-
-	references := make([]string, len(input.EvidenceBundle.Items))
-	for index, item := range input.EvidenceBundle.Items {
-		references[index] = item.Reference
 	}
 	secondReference := references[0]
 	if len(references) > 1 {

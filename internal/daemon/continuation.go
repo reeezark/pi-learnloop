@@ -32,7 +32,15 @@ type continuationEntry struct {
 type continuationValue struct {
 	result      evidence.Result
 	piSessionID string
+	contract    evidenceContract
 }
+
+type evidenceContract uint8
+
+const (
+	evidenceContractV1 evidenceContract = iota + 1
+	evidenceContractV2
+)
 
 type continuationStore struct {
 	mu            sync.Mutex
@@ -57,17 +65,35 @@ func newContinuationStore() *continuationStore {
 }
 
 func (store *continuationStore) retain(result evidence.Result) (continuationDescriptor, error) {
-	return store.retainValue(result, "")
+	return store.retainValue(result, "", evidenceContractV1)
 }
 
 func (store *continuationStore) retainWithPiSession(result evidence.Result, piSessionID string) (continuationDescriptor, error) {
 	if !history.ValidPiSessionID(piSessionID) {
 		return continuationDescriptor{}, fmt.Errorf("retain Pi Session provenance: invalid identity")
 	}
-	return store.retainValue(result, piSessionID)
+	return store.retainValue(result, piSessionID, evidenceContractV1)
 }
 
-func (store *continuationStore) retainValue(result evidence.Result, piSessionID string) (continuationDescriptor, error) {
+func (store *continuationStore) retainGoContext(result evidence.Result) (continuationDescriptor, error) {
+	return store.retainGoContextValue(result, "")
+}
+
+func (store *continuationStore) retainGoContextWithPiSession(result evidence.Result, piSessionID string) (continuationDescriptor, error) {
+	if !history.ValidPiSessionID(piSessionID) {
+		return continuationDescriptor{}, fmt.Errorf("retain Pi Session provenance: invalid identity")
+	}
+	return store.retainGoContextValue(result, piSessionID)
+}
+
+func (store *continuationStore) retainGoContextValue(result evidence.Result, piSessionID string) (continuationDescriptor, error) {
+	if result.GoContext == nil {
+		return continuationDescriptor{}, fmt.Errorf("retain Go context: missing enriched evidence")
+	}
+	return store.retainValue(result, piSessionID, evidenceContractV2)
+}
+
+func (store *continuationStore) retainValue(result evidence.Result, piSessionID string, contract evidenceContract) (continuationDescriptor, error) {
 	bytes := resultExcerptBytes(result)
 	if bytes == 0 {
 		return continuationDescriptor{Available: false, Reason: "insufficient_evidence"}, nil
@@ -101,6 +127,7 @@ func (store *continuationStore) retainValue(result evidence.Result, piSessionID 
 		value: continuationValue{
 			result:      cloneEvidenceResult(result),
 			piSessionID: piSessionID,
+			contract:    contract,
 		},
 		expiresAt:    expiresAt,
 		excerptBytes: bytes,
@@ -150,6 +177,9 @@ func resultExcerptBytes(result evidence.Result) int {
 			total += len(declaration.Excerpt)
 		}
 	}
+	if result.GoContext != nil {
+		total += result.GoContext.ApproximateBytes
+	}
 	return total
 }
 
@@ -166,5 +196,27 @@ func cloneEvidenceResult(value evidence.Result) evidence.Result {
 			result.Files[fileIndex].Declarations[declarationIndex].ChangedLines = append([]evidence.LineRange(nil), declaration.ChangedLines...)
 		}
 	}
+	if value.GoContext != nil {
+		contextValue := *value.GoContext
+		contextValue.Build.BuildTags = cloneContinuationSlice(value.GoContext.Build.BuildTags)
+		contextValue.Build.ToolTags = cloneContinuationSlice(value.GoContext.Build.ToolTags)
+		contextValue.Build.ReleaseTags = cloneContinuationSlice(value.GoContext.Build.ReleaseTags)
+		contextValue.Build.Modules = cloneContinuationSlice(value.GoContext.Build.Modules)
+		contextValue.Build.Workspaces = cloneContinuationSlice(value.GoContext.Build.Workspaces)
+		contextValue.Build.Replacements = cloneContinuationSlice(value.GoContext.Build.Replacements)
+		contextValue.Items = cloneContinuationSlice(value.GoContext.Items)
+		contextValue.Relations = cloneContinuationSlice(value.GoContext.Relations)
+		contextValue.Omissions = cloneContinuationSlice(value.GoContext.Omissions)
+		result.GoContext = &contextValue
+	}
+	return result
+}
+
+func cloneContinuationSlice[T any](value []T) []T {
+	if value == nil {
+		return nil
+	}
+	result := make([]T, len(value))
+	copy(result, value)
 	return result
 }

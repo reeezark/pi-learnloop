@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "go-context-budget-exhaustion",
+  "case_version": "1.0.0",
+  "category": "insufficient_evidence",
+  "description": "Output truncation constrains questions and cannot be represented as complete context.",
+  "stimulus": {
+    "evidence": [
+      {"ref": "C001", "kind": "metadata", "synthetic": true, "content": "status=partial; omission=output_truncated; omitted_items=9; omitted_relations=4"}
+    ],
+    "candidate_output": {"claim": "The bundle proves the complete repository dependency graph."}
+  },
+  "expectations": {
+    "decision": "abstain",
+    "required_signals": ["respects-output-truncation", "does-not-claim-complete-coverage"],
+    "required_evidence_refs": ["C001"],
+    "forbidden_claims": ["complete-dependency-graph", "no-context-was-omitted"]
+  },
+  "tags": ["go-context", "budget", "truncation"]
+}

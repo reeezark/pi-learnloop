@@ -47,6 +47,23 @@ func TestContinuationStoreOwnsPiSessionProvenanceSeparately(t *testing.T) {
 	}
 }
 
+func TestContinuationStoreAccountsForAllRepositoryDerivedGoContextBytes(t *testing.T) {
+	store := testContinuationStore()
+	result := continuationTestResult("changed evidence")
+	result.GoContext = &evidence.GoContext{ApproximateBytes: 321}
+	descriptor, err := store.retainGoContext(result)
+	if err != nil || !descriptor.Available {
+		t.Fatalf("retainGoContext() = (%#v, %v), want available", descriptor, err)
+	}
+	want := len("changed evidence") + result.GoContext.ApproximateBytes
+	if store.retainedBytes != want {
+		t.Fatalf("retained bytes = %d, want all changed and Go-context bytes %d", store.retainedBytes, want)
+	}
+	if _, ok := store.consume(descriptor.ID); !ok || store.retainedBytes != 0 {
+		t.Fatalf("consume() did not release exact retained byte accounting")
+	}
+}
+
 func TestContinuationStoreRejectsInvalidPiSessionWithoutEcho(t *testing.T) {
 	store := testContinuationStore()
 	invalid := "private/session"

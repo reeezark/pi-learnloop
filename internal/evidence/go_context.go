@@ -78,6 +78,7 @@ type GoContext struct {
 	AnalyzedFileCount    int
 	AnalyzedSourceBytes  int
 	DirectImportEdges    int
+	ApproximateBytes     int
 	Items                []ContextItem
 	Relations            []ContextRelation
 	Omissions            []ContextOmission
@@ -1595,6 +1596,7 @@ func (analyzer *contextAnalyzer) finish() {
 		analyzer.output.Status = ContextPartial
 	}
 	analyzer.output.Omissions = orderedContextOmissions(analyzer.omissionCounts)
+	analyzer.output.ApproximateBytes = contextApproximateBytes(*analyzer.output)
 }
 
 func (analyzer *contextAnalyzer) applyOutputLimits() {

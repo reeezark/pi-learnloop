@@ -13,11 +13,12 @@ import (
 )
 
 const (
-	AssessmentInputSchemaVersion = 1
-	AssessmentTurnSchemaVersion  = 1
-	MaxAnswerTextBytes           = 4 * 1024
-	MaxAssessmentTextBytes       = 1000
-	MaxAssessmentTurnBytes       = 64 * 1024
+	AssessmentInputSchemaVersion   = 1
+	AssessmentInputSchemaVersionV2 = 2
+	AssessmentTurnSchemaVersion    = 1
+	MaxAnswerTextBytes             = 4 * 1024
+	MaxAssessmentTextBytes         = 1000
+	MaxAssessmentTurnBytes         = 64 * 1024
 )
 
 type AssessmentStage string
@@ -105,8 +106,12 @@ func NewInitialAssessmentInput(input Input, questionSet QuestionSet, answers []A
 	if err != nil {
 		return AssessmentInput{}, invalidInput(err)
 	}
+	schemaVersion := AssessmentInputSchemaVersion
+	if ownedInput.SchemaVersion == InputSchemaVersionV2 {
+		schemaVersion = AssessmentInputSchemaVersionV2
+	}
 	return AssessmentInput{
-		SchemaVersion:  AssessmentInputSchemaVersion,
+		SchemaVersion:  schemaVersion,
 		Stage:          AssessmentStageInitialAnswers,
 		EvaluatorInput: ownedInput,
 		QuestionSet:    ownedQuestions,
@@ -235,7 +240,11 @@ func DeriveAssessmentLabel(turn AssessmentTurn) (AssessmentLabel, error) {
 }
 
 func validateAssessmentInput(input AssessmentInput) error {
-	if input.SchemaVersion != AssessmentInputSchemaVersion {
+	expectedSchemaVersion := AssessmentInputSchemaVersion
+	if input.EvaluatorInput.SchemaVersion == InputSchemaVersionV2 {
+		expectedSchemaVersion = AssessmentInputSchemaVersionV2
+	}
+	if input.SchemaVersion != expectedSchemaVersion {
 		return errors.New("unsupported assessment input schema version")
 	}
 	_, references, err := cloneValidatedRuntimeInput(input.EvaluatorInput)
@@ -278,13 +287,7 @@ func cloneValidatedRuntimeInput(input Input) (Input, []string, error) {
 	if err := json.Unmarshal(content, &owned); err != nil {
 		return Input{}, nil, err
 	}
-	if owned.SchemaVersion != InputSchemaVersion {
-		return Input{}, nil, errors.New("unsupported evaluator input schema version")
-	}
-	if err := validateBundle(runtimeBundleToDomain(owned.EvidenceBundle)); err != nil {
-		return Input{}, nil, err
-	}
-	references, err := assessmentReferences(owned)
+	references, err := validatedInputReferences(owned)
 	if err != nil {
 		return Input{}, nil, err
 	}
@@ -367,17 +370,7 @@ func domainOmissions(omissions []EvidenceOmission) []evidence.Omission {
 }
 
 func assessmentReferences(input Input) ([]string, error) {
-	if input.SchemaVersion != InputSchemaVersion || len(input.EvidenceBundle.Items) == 0 {
-		return nil, errors.New("validated evaluator input is required")
-	}
-	references := make([]string, len(input.EvidenceBundle.Items))
-	for index, item := range input.EvidenceBundle.Items {
-		references[index] = item.Reference
-	}
-	if _, err := referenceSet(references); err != nil {
-		return nil, err
-	}
-	return references, nil
+	return validatedInputReferences(input)
 }
 
 func cloneValidatedQuestions(questionSet QuestionSet, references []string) (QuestionSet, error) {

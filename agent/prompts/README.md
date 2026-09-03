@@ -36,6 +36,8 @@ Allowed prompt states are `draft | released | deprecated`.
 | --- | --- | --- | --- |
 | `evaluator-question-generation` | `1.0.0` | `evaluator-input@1` | `evaluator-question-set@1` |
 | `evaluator-answer-assessment` | `1.0.0` | `evaluator-assessment-input@1` | `evaluator-assessment-turn@1` |
+| `evaluator-question-generation` | `2.0.0` | `evaluator-input@2` | `evaluator-question-set@1` |
+| `evaluator-answer-assessment` | `2.0.0` | `evaluator-assessment-input@2` | `evaluator-assessment-turn@1` |
 
 ## Version Rules
 
@@ -56,3 +58,7 @@ Allowed prompt states are `draft | released | deprecated`.
 - Do not select a model or score threshold in this guide.
 
 The capability policy is independent of prompt wording. A prompt cannot grant a denied capability.
+
+The v2 prompts additionally apply `../policies/go-context-evidence.json`. They
+may use only changed and Go-context evidence that appeared in the retained
+preview, and must preserve the same v1 output contracts.

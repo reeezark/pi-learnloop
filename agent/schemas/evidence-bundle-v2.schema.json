@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pi-learnloop:runtime:evidence-bundle:2",
+  "asset_id": "evidence-bundle",
+  "version": "2.0.0",
+  "title": "Pi LearnLoop evidence-bundle@2",
+  "description": "Documentation schema. Go runtime validation additionally enforces UTF-8 byte limits, ordering, hashes, counts, and manifest identity.",
+  "type": "object",
+  "required": [
+    "format_version", "id", "manifest_sha256", "base_revision", "head_revision",
+    "applied_limits", "file_count", "declaration_count", "evidence_count",
+    "approximate_bytes", "files", "items", "go_context", "truncation"
+  ],
+  "properties": {
+    "format_version": {"const": 2},
+    "id": {"type": "string", "pattern": "^eb2-[a-f0-9]{64}$"},
+    "manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "base_revision": {"type": "string", "minLength": 1},
+    "head_revision": {"type": "string", "minLength": 1},
+    "applied_limits": {"$ref": "#/$defs/changed_limits"},
+    "file_count": {"type": "integer", "minimum": 0, "maximum": 20},
+    "declaration_count": {"type": "integer", "minimum": 0, "maximum": 100},
+    "evidence_count": {"type": "integer", "minimum": 1, "maximum": 140},
+    "approximate_bytes": {"type": "integer", "minimum": 1},
+    "files": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/file"}},
+    "items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/changed_item"}},
+    "go_context": {"$ref": "#/$defs/go_context"},
+    "truncation": {"$ref": "#/$defs/changed_truncation"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "line_range": {
+      "type": "object",
+      "required": ["start", "end"],
+      "properties": {"start": {"type": "integer", "minimum": 1}, "end": {"type": "integer", "minimum": 1}},
+      "additionalProperties": false
+    },
+    "changed_limits": {
+      "type": "object",
+      "required": ["max_files", "max_declarations", "max_excerpt_bytes"],
+      "properties": {
+        "max_files": {"const": 20},
+        "max_declarations": {"const": 100},
+        "max_excerpt_bytes": {"const": 131072}
+      },
+      "additionalProperties": false
+    },
+    "omission": {
+      "type": "object",
+      "required": ["reason", "count"],
+      "properties": {
+        "reason": {"enum": ["deleted_file", "deleted_only_hunk", "outside_declaration"]},
+        "count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "file": {
+      "type": "object",
+      "required": ["path", "status", "changed_lines", "evidence_references", "omissions"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "status": {"enum": ["added", "modified", "deleted"]},
+        "changed_lines": {"type": "array", "items": {"$ref": "#/$defs/line_range"}},
+        "evidence_references": {"type": "array", "items": {"type": "string", "pattern": "^E[0-9]{3}$"}, "uniqueItems": true},
+        "omissions": {"type": "array", "items": {"$ref": "#/$defs/omission"}}
+      },
+      "additionalProperties": false
+    },
+    "changed_item": {
+      "type": "object",
+      "required": [
+        "reference", "kind", "path", "declaration_kind", "identity", "start_line",
+        "end_line", "changed_lines", "content", "content_bytes", "content_sha256", "truncated"
+      ],
+      "properties": {
+        "reference": {"type": "string", "pattern": "^E[0-9]{3}$"},
+        "kind": {"enum": ["code", "test"]},
+        "path": {"type": "string", "minLength": 1},
+        "declaration_kind": {"enum": ["function", "method", "type", "interface", "variable", "constant"]},
+        "identity": {"type": "string", "minLength": 1},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "changed_lines": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/line_range"}},
+        "content": {"type": "string", "minLength": 1},
+        "content_bytes": {"type": "integer", "minimum": 1},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "truncated": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "changed_truncation": {
+      "type": "object",
+      "required": ["truncated", "omitted_files", "omitted_declarations", "omitted_excerpt_bytes"],
+      "properties": {
+        "truncated": {"type": "boolean"},
+        "omitted_files": {"type": "integer", "minimum": 0},
+        "omitted_declarations": {"type": "integer", "minimum": 0},
+        "omitted_excerpt_bytes": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "context_limits": {
+      "type": "object",
+      "required": [
+        "max_changed_files", "max_module_roots", "max_packages", "max_files_per_package",
+        "max_files", "max_directory_entries", "max_source_bytes_per_file", "max_source_bytes",
+        "max_direct_import_edges", "analysis_timeout_millis", "max_output_files",
+        "max_output_items", "max_relations", "max_excerpt_bytes", "max_output_bytes",
+        "max_evaluator_input_bytes"
+      ],
+      "properties": {
+        "max_changed_files": {"const": 20},
+        "max_module_roots": {"const": 8},
+        "max_packages": {"const": 32},
+        "max_files_per_package": {"const": 64},
+        "max_files": {"const": 160},
+        "max_directory_entries": {"const": 256},
+        "max_source_bytes_per_file": {"const": 262144},
+        "max_source_bytes": {"const": 2097152},
+        "max_direct_import_edges": {"const": 256},
+        "analysis_timeout_millis": {"const": 30000},
+        "max_output_files": {"const": 20},
+        "max_output_items": {"const": 40},
+        "max_relations": {"const": 100},
+        "max_excerpt_bytes": {"const": 4096},
+        "max_output_bytes": {"const": 65536},
+        "max_evaluator_input_bytes": {"const": 262144}
+      },
+      "additionalProperties": false
+    },
+    "module": {
+      "type": "object",
+      "required": ["path", "directory", "go_version", "toolchain"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "directory": {"type": "string"},
+        "go_version": {"type": "string", "minLength": 1},
+        "toolchain": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["directory", "go_version", "toolchain"],
+      "properties": {"directory": {"type": "string"}, "go_version": {"type": "string"}, "toolchain": {"type": "string"}},
+      "additionalProperties": false
+    },
+    "replacement": {
+      "type": "object",
+      "required": ["module_path", "directory", "repository_local"],
+      "properties": {"module_path": {"type": "string", "minLength": 1}, "directory": {"type": "string"}, "repository_local": {"type": "boolean"}},
+      "additionalProperties": false
+    },
+    "build": {
+      "type": "object",
+      "required": [
+        "goos", "goarch", "cgo_enabled", "build_tags", "tool_tags", "release_tags",
+        "toolchain_version", "test_variant", "modules", "workspaces", "replacements"
+      ],
+      "properties": {
+        "goos": {"type": "string", "minLength": 1},
+        "goarch": {"type": "string", "minLength": 1},
+        "cgo_enabled": {"const": false},
+        "build_tags": {"type": "array", "maxItems": 0},
+        "tool_tags": {"type": "array", "items": {"type": "string"}},
+        "release_tags": {"type": "array", "items": {"type": "string"}},
+        "toolchain_version": {"type": "string", "minLength": 1},
+        "test_variant": {"type": "boolean"},
+        "modules": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/module"}},
+        "workspaces": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/workspace"}},
+        "replacements": {"type": "array", "items": {"$ref": "#/$defs/replacement"}}
+      },
+      "additionalProperties": false
+    },
+    "context_item": {
+      "type": "object",
+      "required": [
+        "reference", "kind", "path", "package_path", "declaration_kind", "identity",
+        "start_line", "end_line", "content", "content_bytes", "content_sha256", "truncated"
+      ],
+      "properties": {
+        "reference": {"type": "string", "pattern": "^C[0-9]{3}$"},
+        "kind": {"enum": ["changed_import", "context_declaration"]},
+        "path": {"type": "string", "minLength": 1},
+        "package_path": {"type": "string", "minLength": 1},
+        "declaration_kind": {"enum": ["", "function", "method", "type", "interface", "variable", "constant"]},
+        "identity": {"type": "string", "minLength": 1},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "content": {"type": "string", "minLength": 1},
+        "content_bytes": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "truncated": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "relation": {
+      "type": "object",
+      "required": ["from", "to", "kind", "strength"],
+      "properties": {
+        "from": {"type": "string", "minLength": 1},
+        "to": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["imports", "references", "implements"]},
+        "strength": {"enum": ["syntactic", "type_checked"]}
+      },
+      "additionalProperties": false
+    },
+    "context_omission": {
+      "type": "object",
+      "required": ["reason", "count"],
+      "properties": {
+        "reason": {"enum": [
+          "analysis_limit_exceeded", "unsupported_module_layout", "unsupported_go_version",
+          "outside_repository_dependency", "cgo_unsupported", "external_type_unavailable",
+          "context_parse_error", "type_incomplete", "output_truncated"
+        ]},
+        "count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "context_truncation": {
+      "type": "object",
+      "required": ["truncated", "omitted_files", "omitted_items", "omitted_relations", "omitted_bytes"],
+      "properties": {
+        "truncated": {"type": "boolean"},
+        "omitted_files": {"type": "integer", "minimum": 0},
+        "omitted_items": {"type": "integer", "minimum": 0},
+        "omitted_relations": {"type": "integer", "minimum": 0},
+        "omitted_bytes": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "go_context": {
+      "type": "object",
+      "required": [
+        "status", "build", "applied_limits", "analyzed_package_count", "analyzed_file_count",
+        "analyzed_source_bytes", "direct_import_edges", "item_count", "relation_count",
+        "approximate_bytes", "items", "relations", "omissions", "truncation"
+      ],
+      "properties": {
+        "status": {"enum": ["complete", "partial", "unavailable"]},
+        "build": {"$ref": "#/$defs/build"},
+        "applied_limits": {"$ref": "#/$defs/context_limits"},
+        "analyzed_package_count": {"type": "integer", "minimum": 0, "maximum": 32},
+        "analyzed_file_count": {"type": "integer", "minimum": 0, "maximum": 160},
+        "analyzed_source_bytes": {"type": "integer", "minimum": 0, "maximum": 2097152},
+        "direct_import_edges": {"type": "integer", "minimum": 0, "maximum": 256},
+        "item_count": {"type": "integer", "minimum": 0, "maximum": 40},
+        "relation_count": {"type": "integer", "minimum": 0, "maximum": 100},
+        "approximate_bytes": {"type": "integer", "minimum": 0, "maximum": 65536},
+        "items": {"type": "array", "maxItems": 40, "items": {"$ref": "#/$defs/context_item"}},
+        "relations": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/relation"}},
+        "omissions": {"type": "array", "maxItems": 9, "items": {"$ref": "#/$defs/context_omission"}},
+        "truncation": {"$ref": "#/$defs/context_truncation"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

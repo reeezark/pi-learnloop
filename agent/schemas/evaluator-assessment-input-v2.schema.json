@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pi-learnloop:runtime:evaluator-assessment-input:2",
+  "asset_id": "evaluator-assessment-input",
+  "version": "2.0.0",
+  "title": "Pi LearnLoop evaluator-assessment-input@2",
+  "type": "object",
+  "required": ["schema_version", "stage", "evaluator_input", "question_set", "answers", "follow_up"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "stage": {"enum": ["initial_answers", "follow_up_answer"]},
+    "evaluator_input": {"$ref": "urn:pi-learnloop:runtime:evaluator-input:2"},
+    "question_set": {
+      "type": "object",
+      "required": ["schema_version", "disposition", "questions"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "disposition": {"const": "questions"},
+        "questions": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/question"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "answers": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/answer"}
+    },
+    "follow_up": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/follow_up_exchange"}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"stage": {"const": "initial_answers"}}},
+      "then": {"properties": {"follow_up": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"stage": {"const": "follow_up_answer"}}},
+      "then": {"properties": {"follow_up": {"$ref": "#/$defs/follow_up_exchange"}}}
+    }
+  ],
+  "$defs": {
+    "question": {
+      "type": "object",
+      "required": ["id", "kind", "text", "evidence_references"],
+      "properties": {
+        "id": {"enum": ["Q1", "Q2", "Q3"]},
+        "kind": {"enum": ["code_specific", "go_backend"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "evidence_references": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "answer": {
+      "type": "object",
+      "required": ["question_id", "text"],
+      "properties": {
+        "question_id": {"enum": ["Q1", "Q2", "Q3"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 4096}
+      },
+      "additionalProperties": false
+    },
+    "follow_up_question": {
+      "type": "object",
+      "required": ["id", "target_question_id", "text", "evidence_references"],
+      "properties": {
+        "id": {"const": "F1"},
+        "target_question_id": {"enum": ["Q1", "Q2", "Q3"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "evidence_references": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "follow_up_exchange": {
+      "type": "object",
+      "required": ["question", "answer"],
+      "properties": {
+        "question": {"$ref": "#/$defs/follow_up_question"},
+        "answer": {"type": "string", "minLength": 1, "maxLength": 4096}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

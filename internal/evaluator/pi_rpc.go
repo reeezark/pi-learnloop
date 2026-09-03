@@ -27,16 +27,18 @@ var errRPCFailure = errors.New("Pi evaluator RPC failed")
 // PiRPCEvaluator runs one isolated, no-tools Pi RPC process per evaluation.
 // Its executable path and released prompt are frozen at daemon startup.
 type PiRPCEvaluator struct {
-	executable   string
-	systemPrompt string
+	executable     string
+	systemPrompt   string
+	systemPromptV2 string
 }
 
 // PiRPCAssessmentEvaluator runs one isolated, no-tools Pi RPC process per
 // answer-assessment turn. It has a separate narrow interface from question
 // generation while sharing only private process-isolation mechanics.
 type PiRPCAssessmentEvaluator struct {
-	executable   string
-	systemPrompt string
+	executable     string
+	systemPrompt   string
+	systemPromptV2 string
 }
 
 // NewPiRPCEvaluator resolves and preflights the supported Pi executable once.
@@ -58,6 +60,33 @@ func NewPiRPCAssessmentEvaluator(ctx context.Context, systemPrompt string) (*PiR
 		return nil, err
 	}
 	return &PiRPCAssessmentEvaluator{executable: executable, systemPrompt: systemPrompt}, nil
+}
+
+// NewVersionedPiRPCEvaluator freezes both released question prompts behind one
+// evaluator seam. Runtime input version, not the client, selects the prompt.
+func NewVersionedPiRPCEvaluator(ctx context.Context, systemPromptV1, systemPromptV2 string) (*PiRPCEvaluator, error) {
+	executable, err := resolvePiRPCExecutable(ctx, systemPromptV1)
+	if err != nil || validateAdditionalPrompt(systemPromptV2) != nil {
+		return nil, errors.New("Pi evaluator is unavailable")
+	}
+	return &PiRPCEvaluator{executable: executable, systemPrompt: systemPromptV1, systemPromptV2: systemPromptV2}, nil
+}
+
+// NewVersionedPiRPCAssessmentEvaluator freezes both released assessment prompts
+// behind the unchanged narrow assessment seam.
+func NewVersionedPiRPCAssessmentEvaluator(ctx context.Context, systemPromptV1, systemPromptV2 string) (*PiRPCAssessmentEvaluator, error) {
+	executable, err := resolvePiRPCExecutable(ctx, systemPromptV1)
+	if err != nil || validateAdditionalPrompt(systemPromptV2) != nil {
+		return nil, errors.New("Pi evaluator is unavailable")
+	}
+	return &PiRPCAssessmentEvaluator{executable: executable, systemPrompt: systemPromptV1, systemPromptV2: systemPromptV2}, nil
+}
+
+func validateAdditionalPrompt(systemPrompt string) error {
+	_, err := BuildPiArguments(ModelSelection{
+		PiVersion: SupportedPiVersion, Provider: "preflight-provider", ModelID: "preflight-model", ThinkingLevel: "off",
+	}, systemPrompt)
+	return err
 }
 
 func resolvePiRPCExecutable(ctx context.Context, systemPrompt string) (string, error) {
@@ -130,7 +159,11 @@ func (evaluator *PiRPCEvaluator) Evaluate(ctx context.Context, input Input, sele
 	if err != nil {
 		return QuestionSet{}, invalidInput(errors.New("evaluator input cannot be encoded"))
 	}
-	assistantText, err := evaluatePiRPC(ctx, evaluator.executable, evaluator.systemPrompt, message, selection)
+	systemPrompt, err := evaluator.questionPrompt(input.SchemaVersion)
+	if err != nil {
+		return QuestionSet{}, invalidInput(err)
+	}
+	assistantText, err := evaluatePiRPC(ctx, evaluator.executable, systemPrompt, message, selection)
 	if err != nil {
 		return QuestionSet{}, err
 	}
@@ -156,7 +189,11 @@ func (evaluator *PiRPCAssessmentEvaluator) EvaluateAssessment(ctx context.Contex
 	if err != nil {
 		return AssessmentTurn{}, invalidInput(errors.New("assessment input cannot be encoded"))
 	}
-	assistantText, err := evaluatePiRPC(ctx, evaluator.executable, evaluator.systemPrompt, message, selection)
+	systemPrompt, err := evaluator.assessmentPrompt(input.SchemaVersion)
+	if err != nil {
+		return AssessmentTurn{}, invalidInput(err)
+	}
+	assistantText, err := evaluatePiRPC(ctx, evaluator.executable, systemPrompt, message, selection)
 	if err != nil {
 		return AssessmentTurn{}, err
 	}
@@ -164,6 +201,34 @@ func (evaluator *PiRPCAssessmentEvaluator) EvaluateAssessment(ctx context.Contex
 		return AssessmentTurn{}, invalidOutput("assessment output exceeds %d bytes", MaxAssessmentTurnBytes)
 	}
 	return ParseAssessmentTurn([]byte(assistantText), input)
+}
+
+func (evaluator *PiRPCEvaluator) questionPrompt(schemaVersion int) (string, error) {
+	switch schemaVersion {
+	case InputSchemaVersion:
+		if evaluator.systemPrompt != "" {
+			return evaluator.systemPrompt, nil
+		}
+	case InputSchemaVersionV2:
+		if evaluator.systemPromptV2 != "" {
+			return evaluator.systemPromptV2, nil
+		}
+	}
+	return "", errors.New("question evaluator prompt is unavailable")
+}
+
+func (evaluator *PiRPCAssessmentEvaluator) assessmentPrompt(schemaVersion int) (string, error) {
+	switch schemaVersion {
+	case AssessmentInputSchemaVersion:
+		if evaluator.systemPrompt != "" {
+			return evaluator.systemPrompt, nil
+		}
+	case AssessmentInputSchemaVersionV2:
+		if evaluator.systemPromptV2 != "" {
+			return evaluator.systemPromptV2, nil
+		}
+	}
+	return "", errors.New("assessment evaluator prompt is unavailable")
 }
 
 func evaluatePiRPC(ctx context.Context, executable, systemPrompt string, message []byte, selection ModelSelection) (string, error) {
@@ -232,22 +297,7 @@ func evaluatePiRPC(ctx context.Context, executable, systemPrompt string, message
 }
 
 func inputReferences(input Input) ([]string, error) {
-	if input.SchemaVersion != InputSchemaVersion || len(input.EvidenceBundle.Items) == 0 {
-		return nil, errors.New("validated evaluator input is required")
-	}
-	references := make([]string, len(input.EvidenceBundle.Items))
-	seen := make(map[string]struct{}, len(references))
-	for index, item := range input.EvidenceBundle.Items {
-		if strings.TrimSpace(item.Reference) == "" {
-			return nil, errors.New("evaluator input contains an empty evidence reference")
-		}
-		if _, duplicate := seen[item.Reference]; duplicate {
-			return nil, errors.New("evaluator input repeats an evidence reference")
-		}
-		seen[item.Reference] = struct{}{}
-		references[index] = item.Reference
-	}
-	return references, nil
+	return runtimeInputReferences(input)
 }
 
 func evaluationError(ctx context.Context) error {

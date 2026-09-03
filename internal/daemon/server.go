@@ -186,6 +186,10 @@ func newHandler(instanceID, authority, token string, services serverServices) ht
 			handleEvidencePreview(response, request, token, services)
 		case "/v1/pi-session-evidence-previews":
 			handlePiSessionEvidencePreview(response, request, token, services)
+		case "/v1/go-context-evidence-previews":
+			handleGoContextEvidencePreview(response, request, token, services)
+		case "/v1/pi-session-go-context-evidence-previews":
+			handlePiSessionGoContextEvidencePreview(response, request, token, services)
 		case "/v1/question-sets":
 			handleQuestionSet(response, request, token, services)
 		case "/v1/assessment-turns":
@@ -607,12 +611,7 @@ func handleQuestionSet(response http.ResponseWriter, request *http.Request, toke
 		return
 	}
 
-	bundle, err := evidence.BuildBundle(retained.result)
-	if err != nil {
-		writeError(response, http.StatusBadGateway, "evaluator_failed", "question evaluation failed")
-		return
-	}
-	input, err := evaluator.NewInput(bundle)
+	input, questionPrompt, assessmentPrompt, err := evaluatorInputForContinuation(retained)
 	if err != nil {
 		writeError(response, http.StatusBadGateway, "evaluator_failed", "question evaluation failed")
 		return
@@ -638,8 +637,8 @@ func handleQuestionSet(response http.ResponseWriter, request *http.Request, toke
 	} else if services.assessments != nil {
 		descriptor, err = services.assessments.Start(input, result, selection, assessment.Provenance{
 			CanonicalRoot:    retained.result.RepositoryRoot,
-			QuestionPrompt:   historyPrompt(prompts.EvaluatorQuestionGenerationV1Metadata()),
-			AssessmentPrompt: historyPrompt(prompts.EvaluatorAnswerAssessmentV1Metadata()),
+			QuestionPrompt:   historyPrompt(questionPrompt),
+			AssessmentPrompt: historyPrompt(assessmentPrompt),
 			PiSessionID:      retained.piSessionID,
 		})
 		if err != nil {

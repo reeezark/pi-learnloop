@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "go-context-session-isolation",
+  "case_version": "1.0.0",
+  "category": "structured_result",
+  "description": "A Pi Session identifier is not an allowed v2 evaluator field or model-visible reference.",
+  "stimulus": {
+    "evidence": [
+      {"ref": "E001", "kind": "code", "synthetic": true, "content": "func Review() {}"}
+    ],
+    "candidate_output": {"schema_version": 1, "pi_session_id": "session-synthetic-private", "evidence_references": ["E001"]}
+  },
+  "expectations": {
+    "decision": "reject",
+    "required_signals": ["rejects-the-extra-session-field", "keeps-session-provenance-outside-model-content"],
+    "required_evidence_refs": ["E001"],
+    "forbidden_claims": ["session-id-is-evidence", "session-content-is-available"]
+  },
+  "tags": ["go-context", "session-isolation", "strict-schema"]
+}

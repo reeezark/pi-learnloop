@@ -1,0 +1,36 @@
+{
+  "id": "go-context-evidence",
+  "version": "1.0.0",
+  "status": "development-contract",
+  "extends": "evaluator-capabilities@1.0.0",
+  "description": "Additional evidence rules for evaluator-input@2 and evaluator-assessment-input@2.",
+  "selection": {
+    "snapshot_consistent": true,
+    "repository_local_only": true,
+    "transitive_dependencies_allowed": false,
+    "external_source_allowed": false
+  },
+  "preview": {
+    "all_model_visible_context_required": true,
+    "completeness_required": true,
+    "limits_required": true,
+    "omissions_required": true,
+    "truncation_required": true
+  },
+  "reasoning": {
+    "syntactic_import_is_type_proof": false,
+    "type_checked_relation_scope": "recorded_relation_only",
+    "outside_knowledge_allowed": false,
+    "missing_context_may_be_inferred": false
+  },
+  "provenance": {
+    "pi_session_id_allowed": false,
+    "pi_session_content_allowed": false,
+    "absolute_repository_path_allowed": false
+  },
+  "persistence": {
+    "source_allowed": false,
+    "context_allowed": false,
+    "manifest_and_prompt_provenance_only": true
+  }
+}

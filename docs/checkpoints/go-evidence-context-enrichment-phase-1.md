@@ -2,7 +2,7 @@
 id: go-evidence-context-enrichment-phase-1
 plan: go-evidence-context-enrichment
 phase: 1
-status: current
+status: superseded
 updated: 2026-09-03
 ---
 
