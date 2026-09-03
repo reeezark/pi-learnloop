@@ -2,7 +2,7 @@
 id: go-evidence-context-enrichment-phase-2
 plan: go-evidence-context-enrichment
 phase: 2
-status: current
+status: superseded
 updated: 2026-09-03
 ---
 
@@ -19,12 +19,12 @@ or dependency behavior.
 
 ### Current Phase
 
-Phase 2 is complete. The active `go-evidence-context-enrichment` plan now points
-to Phase 3 with `phase_status: awaiting_approval`. Phase 3 is not authorized.
+Phase 2 is complete. It was committed and pushed to `main` and `origin/main` as
+`4179ef7` on 2026-09-03. The active `go-evidence-context-enrichment` plan now
+points to the explicitly authorized Phase 3 with `phase_status: in_progress`.
 
 Phase 1 was committed and pushed to `main` and `origin/main` as `477c1aa` before
-Phase 2 began. The completed Phase 2 working tree has not been committed or
-pushed.
+Phase 2 began.
 
 ## Completed
 

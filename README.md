@@ -1,15 +1,15 @@
 # Pi LearnLoop
 
-Pi LearnLoop is a local learning companion for Go developers who use the Pi coding agent. Its current production slice lets you manually choose a Git changeset with `/learn` or choose a current-project Pi Session and explicitly bind it to a Git changeset, inspect the changed-Go evidence, explicitly approve sending only those excerpts to your configured model, answer three evidence-backed learning questions, receive concise per-question feedback plus a deterministic repository-scoped label, and later inspect source-free local results with `/learn-history`.
+Pi LearnLoop is a local learning companion for Go developers who use the Pi coding agent. Its current production slice lets you manually choose a Git changeset with `/learn` or choose a current-project Pi Session and explicitly bind it to a Git changeset, inspect bounded changed-Go evidence plus selected-snapshot Go package/type context, explicitly approve sending only the displayed evidence to your configured model, answer three evidence-backed learning questions, receive concise per-question feedback plus a deterministic repository-scoped label, and later inspect source-free local results with `/learn-history`.
 
 ## Current Status
 
 Implemented:
 
-- bounded changed-Go declaration evidence for commit ranges and working trees;
+- bounded changed-Go declaration, changed-import, direct repository-local package/type, and relationship evidence for commit ranges and working trees;
 - an authenticated, IPv4-loopback-only Go daemon;
 - a Pi 0.84.x TypeScript extension that registers the manual `/learn` and `/learn-history` commands;
-- preview output containing changed files, mapped symbols, approximate excerpt bytes, and truncation details;
+- a strict enriched preview that displays changed excerpts, C-series context items, relationships, snapshot build policy, every fixed input/output limit, completeness, omissions, hashes, byte estimates, and truncation details;
 - a five-minute, in-memory, single-use continuation that retains the exact bounded preview;
 - an authenticated `/v1/question-sets` route and isolated Pi 0.84.3 RPC evaluator that return exactly two code-specific questions and one Go/backend question;
 - an explicit confirmation step before the retained evidence is consumed;
@@ -20,7 +20,8 @@ Implemented:
 - daemon-owned protected SQLite history at `os.UserConfigDir()/pi-learnloop/data/history.db`, with schema v2 migrations, source-free running/F1/terminal records, one nullable bounded Pi Session ID provenance value, startup interruption marking, and explicit save status in complete assessment responses;
 - a strict authenticated `/v1/learning-history-queries` route capped at 50 records and a manual `/learn-history` UI that requests the 20 newest records for the current canonical Git repository without a model call;
 - independent strict authenticated `/v1/pi-session-evidence-previews` and `/v1/pi-session-review-queries` routes that keep a bounded Session ID beside retained evidence, propagate it only to Session-aware history, and filter only completed IDs in the canonical repository;
-- a manual `/learn` Pi Session path that lists the current cwd once through Pi 0.84.3, immediately projects the newest at most 20 entries to unique bounded IDs, filters completed reviews once, displays only IDs, and requires an explicit Git working-tree or commit-range association before the unchanged preview and model-confirmation flow.
+- independent enriched `/v1/go-context-evidence-previews` and `/v1/pi-session-go-context-evidence-previews` routes that retain the exact visible snapshot and select v2 bundle/input/prompt contracts without client-supplied mode fields;
+- a manual `/learn` Pi Session path that lists the current cwd once through Pi 0.84.3, immediately projects the newest at most 20 entries to unique bounded IDs, filters completed reviews once, displays only IDs, and requires an explicit Git working-tree or commit-range association before the enriched preview and model-confirmation flow.
 
 Not implemented:
 
@@ -64,7 +65,9 @@ Then invoke:
 /learn
 ```
 
-Choose a working tree against an explicit base revision, an explicit commit range, or `Pi Session`. The direct Git choices preserve the existing flow. The Session choice lists the current project's newest Sessions, removes IDs that already have a completed review in this repository, asks you to choose one full ID, and then requires the same explicit Git selection. The preview shows the user-supplied Session/Git association; the Git evidence remains authoritative. After inspecting the preview, confirm whether one evaluation may send those exact retained excerpts to your configured model. The Session ID is not sent to the model. Cancelling, entering an empty revision, or declining confirmation sends no continuation request.
+Choose a working tree against an explicit base revision, an explicit commit range, or `Pi Session`. The Session choice lists the current project's newest Sessions, removes IDs that already have a completed review in this repository, asks you to choose one full ID, and then requires the same explicit Git selection. The preview shows the user-supplied Session/Git association; Git remains the evidence authority.
+
+The enriched preview visibly separates changed declarations from changed-import/context items and relationships. It also shows the exact selected-snapshot build configuration, analysis totals, fixed discovery and output limits, context status (`complete`, `partial`, or `unavailable`), closed omission reasons, content hashes, and both changed/context truncation counts. Partial or unavailable context is not replaced with the older changed-only route: you may continue only after seeing and explicitly confirming that state. The confirmation names the active model, estimates repository-derived evidence bytes, and states the 256-KiB complete evaluator-input cap; Pi LearnLoop cannot know the provider's monetary price. The Session ID is not sent to the model. Cancelling, entering an empty revision, or declining confirmation sends no continuation request and creates no history record. An updated extension fails closed against an older daemon response that lacks the required enriched fields.
 
 Pi LearnLoop disables Pi Agent retry and auto-compaction for the evaluator and never retries a continuation or model call itself. The supported configuration keeps Pi's external `retry.provider.maxRetries` setting at `0`; the RPC API cannot enforce that setting.
 
@@ -84,7 +87,7 @@ Automated tests always use a fake Pi executable and never contact a provider. A 
 2. Confirm that `pi --version` is exactly `0.84.3`, the intended model is active, Pi credentials are configured, and `retry.provider.maxRetries` remains `0`.
 3. Start the daemon, load the extension, invoke `/learn`, and confirm only after reviewing the preview.
 4. Verify that the command returns exactly two code-specific questions and one Go/backend question.
-5. To smoke-test assessment, enter Q1/Q2/Q3 answers and approve the second disclosure. This resends the same selected excerpts together with the answers and incurs one additional model call. If F1 is returned, answering it resends the retained assessment context and may incur one more call, for at most two assessment calls beyond question generation.
+5. To smoke-test assessment, enter Q1/Q2/Q3 answers and approve the second disclosure. This resends the same displayed changed/context evidence together with the answers and incurs one additional model call. If F1 is returned, answering it resends the retained assessment context and may incur one more call, for at most two assessment calls beyond question generation.
 6. Verify either one F1 followed by a complete result or an immediate complete result with three verdicts and one derived label. A warning means the assessment succeeded but local history was unavailable. No automated command in this repository performs this live step.
 
 For a persistent local installation, Pi can load the package directly from the checkout:
@@ -101,7 +104,7 @@ The package has no third-party runtime npm dependency. `@earendil-works/pi-codin
 - Discovery metadata and the per-start Instance Token live under the current user's protected configuration directory.
 - The extension accepts only an exact `http://127.0.0.1:<port>` descriptor, verifies the daemon instance before reading the token, bypasses environment HTTP proxies, and retries discovery at most once after a startup race.
 - `/learn` submits the trusted Pi working directory and the explicit Git selection. A Session review also sends only the selected bounded Session ID through the two dedicated local routes. It does not send Pi credentials.
-- A successful preview may retain only its bounded evidence in daemon memory for five minutes. A Session-bound preview retains one validated source-free Session ID beside, never inside, that evidence. The opaque continuation is single-use, has fixed count and byte limits, and is removed on expiry or daemon shutdown.
+- A successful enriched preview may retain only its bounded changed/context evidence in daemon memory for five minutes. Repository-derived Go context is capped at 64 KiB and the complete serialized evaluator input at 256 KiB. A Session-bound preview retains one validated source-free Session ID beside, never inside, that evidence. The opaque continuation is single-use, has fixed count and byte limits, and is removed on expiry or daemon shutdown.
 - Confirmation sends only the opaque continuation ID and non-secret active model identifiers to the daemon. The daemon builds the evaluator input from the exact retained preview without rereading the repository.
 - Successful production questions may retain their exact validated input for at most thirty minutes under an eight-entry/1-MiB cap. Initial answers and F1 are bounded to 4 KiB each, submissions are atomically single-consume, and completed, failed, expired, or concurrent IDs share a non-retryable unavailable result.
 - Daemon assessment state, source, answers, prompt bodies, model output, and feedback are never persisted or logged.
@@ -112,7 +115,7 @@ The package has no third-party runtime npm dependency. `@earendil-works/pi-codin
 - Pi 0.84.3's `SessionManager.list` reads candidate Session files and temporarily materializes message-derived `firstMessage` and `allMessagesText` plus unused metadata in the extension process before returning. The manual flow immediately keeps only the newest at most 20 validated IDs and never uses, displays, transmits, logs, caches, indexes, or persists the richer values. This accepted limitation means listing cost still scales with all Session files in the configured current-project Session directory, not only the 20 IDs shown.
 - SQLite WAL state is part of the database. Do not copy only `history.db` while the daemon is running; `history.db-wal` and `history.db-shm` may be required for a consistent manual backup. No backup or export command is implemented.
 - Production question generation and every assessment turn start a frozen, symlink-resolved Pi 0.84.3 executable directly without a shell. Sessions, tools, extensions, skills, prompt templates, themes, context files, and project approval are disabled.
-- Only the selected excerpts and non-secret bundle provenance enter the Pi-managed model request. Credentials never enter HTTP, argv, prompts, logs, persisted records, or model-visible content.
+- Only the displayed selected excerpts, context items, relationships, build/limit/completeness metadata, omissions, truncation, and non-secret bundle provenance enter the Pi-managed model request. Context analysis uses the selected Git snapshot, reads no external/module-cache/vendor/GOROOT source, performs no network access, and persists no source. Credentials never enter HTTP, argv, prompts, logs, persisted records, or model-visible content.
 - RPC runtime, stdout, stderr, and final output are bounded; malformed output, discovered commands, tool events, retries, compaction, timeout, cancellation, or child failure fail closed. The child is always terminated and reaped.
 
 The Instance Token does not protect against root, a malicious process already running as the same user, or a compromised extension that the user has trusted.

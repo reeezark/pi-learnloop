@@ -9,6 +9,7 @@ import {
   type LearnClient,
   type LearnCommandContext,
 } from "../../extensions/lib/learn-command.ts";
+import { completeGoContext } from "./go-context-fixture.ts";
 
 interface SessionLearnClient extends LearnClient {
   previewPiSession(
@@ -331,6 +332,7 @@ function previewWithContinuation(): EvidencePreviewResponse {
       base_revision: "base-sha",
       head_revision: "WORKTREE",
       files: [],
+      go_context: completeGoContext(),
       truncation: {
         truncated: false,
         omitted_files: 0,

@@ -12,6 +12,11 @@ import {
   type LearnCommandContext,
   type LearningHistoryClient,
 } from "../../extensions/lib/learn-command.ts";
+import {
+  completeGoContext,
+  partialGoContextWithChangedImport,
+  unavailableGoContext,
+} from "./go-context-fixture.ts";
 
 test("manual learning history query renders source-free repository records without a model client", async () => {
   const requests: Parameters<LearningHistoryClient["history"]>[] = [];
@@ -163,6 +168,7 @@ test("manual commit range shows the selected evidence preview", async () => {
               omissions: [],
             },
           ],
+          go_context: completeGoContext(),
           truncation: {
             truncated: false,
             omitted_files: 0,
@@ -170,6 +176,7 @@ test("manual commit range shows the selected evidence preview", async () => {
             omitted_excerpt_bytes: 0,
           },
         },
+        continuation: { available: false, reason: "insufficient_evidence" },
       };
     },
     async questions() {
@@ -208,7 +215,90 @@ test("manual commit range shows the selected evidence preview", async () => {
   assert.match(notifications[0]?.message ?? "", /internal\/example\/example\.go/);
   assert.match(notifications[0]?.message ?? "", /Answer/);
   assert.match(notifications[0]?.message ?? "", /31 bytes/);
-  assert.match(notifications[0]?.message ?? "", /Truncation: none/);
+  assert.match(notifications[0]?.message ?? "", /evidence_kind=code/);
+  assert.match(notifications[0]?.message ?? "", /sha256=[0-9a-f]{64}/);
+  assert.match(notifications[0]?.message ?? "", /Changed-evidence Truncation: none/);
+  assert.match(notifications[0]?.message ?? "", /Go context: complete/);
+});
+
+test("renders import-only context, build policy, relationships, omissions, and budget truncation", () => {
+  const response = continuablePreview();
+  response.preview.files = [{
+    path: "main.go",
+    status: "modified",
+    changed_lines: [{ start: 3, end: 3 }],
+    declarations: [],
+    omissions: [{ reason: "outside_declaration", count: 1 }],
+  }];
+  response.preview.go_context = partialGoContextWithChangedImport();
+
+  const message = formatPreview(response);
+
+  assert.match(message, /Changed declarations: none/);
+  assert.match(message, /Go context: partial/);
+  assert.match(message, /C001 example\.com\/dep · changed_import/);
+  assert.match(message, /"example\.com\/dep"/);
+  assert.match(message, /imports\/syntactic/);
+  assert.match(message, /Module: example\.com\/repo/);
+  assert.match(message, /analysis_timeout_ms=30000/);
+  assert.match(message, /evaluator_input_bytes=262144/);
+  assert.match(message, /external_type_unavailable=1, output_truncated=1/);
+  assert.match(message, /1 items, 0 relationships, 12 bytes omitted/);
+});
+
+test("renders repository control and format characters as visible escapes", () => {
+  const response = continuablePreview();
+  const declaration = response.preview.files[0]!.declarations[0]!;
+  declaration.excerpt = `func Answer() int { return 42 }${String.fromCodePoint(0x1b, 0x202e)}`;
+
+  const message = formatPreview(response);
+
+  assert.match(message, /\\u\{1b\}\\u\{202e\}/);
+  assert.doesNotMatch(message, /\u001b|\u202e/u);
+});
+
+test("unavailable context is shown and requires confirmation before continuation consumption", async () => {
+  let previewCalls = 0;
+  let questionCalls = 0;
+  const events: string[] = [];
+  const response = continuablePreview();
+  response.preview.go_context = unavailableGoContext();
+  const client: LearnClient = {
+    async preview() {
+      previewCalls += 1;
+      return response;
+    },
+    async questions() {
+      questionCalls += 1;
+      events.push("questions");
+      return { schema_version: 1, disposition: "insufficient_evidence", questions: [] };
+    },
+  };
+  const context: LearnCommandContext = {
+    cwd: "/work/repository",
+    hasUI: true,
+    model: { provider: "anthropic", id: "claude-test" },
+    thinkingLevel: "off",
+    isProjectTrusted: () => true,
+    ui: {
+      async select() { return "Working tree against a base revision"; },
+      async input() { return "HEAD"; },
+      async confirm(_title, message) {
+        events.push("confirm");
+        assert.match(message, /completeness, omissions, and truncation shown above/);
+        return true;
+      },
+      notify(message) {
+        events.push(message.includes("Go context: unavailable") ? "preview" : "notification");
+      },
+    },
+  };
+
+  await createLearnCommand(client)("", context);
+
+  assert.equal(previewCalls, 1);
+  assert.equal(questionCalls, 1);
+  assert.deepEqual(events.slice(0, 3), ["preview", "confirm", "questions"]);
 });
 
 test("daemon unavailability is reported with a recovery action", async () => {
@@ -399,6 +489,7 @@ test("empty Go changes are explained without implying that evaluation ran", () =
       base_revision: "base-sha",
       head_revision: "WORKTREE",
       files: [],
+      go_context: completeGoContext(),
       truncation: {
         truncated: false,
         omitted_files: 0,
@@ -406,6 +497,7 @@ test("empty Go changes are explained without implying that evaluation ran", () =
         omitted_excerpt_bytes: 0,
       },
     },
+    continuation: { available: false, reason: "insufficient_evidence" },
   };
 
   const message = formatPreview(response);
@@ -454,11 +546,13 @@ test("declining after the visible preview never sends a continuation request", a
 
   assert.equal(questionRequests, 0);
   assert.equal(confirmations.length, 1);
-  assert.match(confirmations[0]?.message ?? "", /selected excerpts shown above/);
-  assert.match(confirmations[0]?.message ?? "", /configured model/);
+  assert.match(confirmations[0]?.message ?? "", /changed Go file\/declaration metadata and excerpts, selected-snapshot Go context items and metadata/);
+  assert.match(confirmations[0]?.message ?? "", /Estimated repository-derived evidence is 31 bytes/);
+  assert.match(confirmations[0]?.message ?? "", /complete evaluator input is capped at 262144 bytes/);
+  assert.match(confirmations[0]?.message ?? "", /Model: anthropic\/claude-test \(thinking=off\)/);
   assert.match(confirmations[0]?.message ?? "", /provider cost/);
   assert.match(confirmations[0]?.message ?? "", /transport may retry/);
-  assert.match(notifications[0] ?? "", /Evidence preview/);
+  assert.match(notifications[0] ?? "", /Enriched evidence preview/);
 });
 
 test("confirmation sends only the continuation and active model metadata, then renders three questions", async () => {
@@ -588,7 +682,7 @@ test("collects three answers, confirms sharing, and renders the Go-derived resul
     },
   }]);
   assert.equal(confirmations.length, 2);
-  assert.match(confirmations[1]?.message ?? "", /same selected excerpts and your three answers/);
+  assert.match(confirmations[1]?.message ?? "", /same 31 bytes of displayed repository-derived evidence together with your three answers/);
   assert.match(confirmations[1]?.message ?? "", /one additional evaluation/);
   assert.match(notifications.at(-1) ?? "", /Learning assessment: partial/);
   assert.match(notifications.at(-1) ?? "", /Q1 — demonstrated/);
@@ -823,6 +917,7 @@ function continuablePreview(): EvidencePreviewResponse {
           omissions: [],
         },
       ],
+      go_context: completeGoContext(),
       truncation: {
         truncated: false,
         omitted_files: 0,

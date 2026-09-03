@@ -8,6 +8,7 @@ import test from "node:test";
 
 import { DaemonEvidenceClient } from "../../extensions/lib/daemon-client.ts";
 import { EvidenceClientError } from "../../extensions/lib/learn-command.ts";
+import { completeGoContext, partialGoContextWithChangedImport } from "./go-context-fixture.ts";
 
 test("discovers the current daemon before sending an authenticated preview request", async (t) => {
   const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
@@ -72,7 +73,7 @@ test("discovers the current daemon before sending an authenticated preview reque
     { method: "GET", url: "/v1/status", body: "" },
     {
       method: "POST",
-      url: "/v1/evidence-previews",
+      url: "/v1/go-context-evidence-previews",
       authorization: `PiLearnLoop ${token}`,
       body: JSON.stringify({
         repository: "/work/repository",
@@ -201,33 +202,26 @@ test("preserves the daemon invalid-revision code for the command layer", async (
   );
 });
 
-test("rejects a malformed success payload before the command renders it", async (t) => {
+test("rejects old-daemon and unknown enriched preview responses without falling back", async (t) => {
   const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
   await chmod(runtimeDir, 0o700);
   const instanceID = "G".repeat(22);
   const token = "H".repeat(43);
+  const current = emptyPreview();
+  const { go_context: _goContext, ...legacyPreview } = current.preview;
+  const responses: unknown[] = [
+    { ...current, preview: legacyPreview },
+    { ...current, unknown: true },
+  ];
+  let previewRequests = 0;
   const server = createServer(async (request, response) => {
     if (request.url === "/v1/status") {
       writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
       return;
     }
     await readBody(request);
-    writeJSON(response, 200, {
-      protocol_version: 1,
-      applied_limits: { max_files: 20, max_declarations: 100, max_excerpt_bytes: 131_072 },
-      preview: {
-        repository_root: "/work/repository",
-        base_revision: "base-sha",
-        head_revision: "head-sha",
-        files: [{}],
-        truncation: {
-          truncated: false,
-          omitted_files: 0,
-          omitted_declarations: 0,
-          omitted_excerpt_bytes: 0,
-        },
-      },
-    });
+    previewRequests += 1;
+    writeJSON(response, 200, responses.shift());
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -247,13 +241,80 @@ test("rejects a malformed success payload before the command renders it", async 
     }),
   );
 
-  await assert.rejects(
-    new DaemonEvidenceClient({ runtimeDir }).preview("/work/repository", {
-      kind: "working_tree",
-      base: "HEAD",
+  const client = new DaemonEvidenceClient({ runtimeDir });
+  for (let index = 0; index < 2; index += 1) {
+    await assert.rejects(
+      client.preview("/work/repository", { kind: "working_tree", base: "HEAD" }),
+      (error: unknown) => error instanceof EvidenceClientError && error.code === "protocol_mismatch",
+    );
+  }
+  assert.equal(previewRequests, 2);
+});
+
+test("validates a rich Go-context response including hashes, budgets, and relations", async (t) => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), "pi-learnloop-client-"));
+  await chmod(runtimeDir, 0o700);
+  const instanceID = "V".repeat(22);
+  const token = "W".repeat(43);
+  const expected = emptyPreview();
+  expected.preview.go_context = partialGoContextWithChangedImport();
+  const responses: unknown[] = [
+    expected,
+    {
+      ...expected,
+      preview: {
+        ...expected.preview,
+        go_context: { ...expected.preview.go_context, approximate_bytes: expected.preview.go_context.approximate_bytes + 1 },
+      },
+    },
+    {
+      ...expected,
+      preview: {
+        ...expected.preview,
+        go_context: {
+          ...expected.preview.go_context,
+          items: [{ ...expected.preview.go_context.items[0], content_sha256: "0".repeat(64) }],
+        },
+      },
+    },
+  ];
+  const server = createServer(async (request, response) => {
+    if (request.url === "/v1/status") {
+      writeJSON(response, 200, { protocol_version: 1, instance_id: instanceID, status: "ready" });
+      return;
+    }
+    await readBody(request);
+    writeJSON(response, 200, responses.shift());
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeProtectedFile(join(runtimeDir, "daemon.token"), token);
+  await writeProtectedFile(
+    join(runtimeDir, "daemon.json"),
+    JSON.stringify({
+      schema_version: 1,
+      protocol_version: 1,
+      instance_id: instanceID,
+      pid: process.pid,
+      base_url: `http://127.0.0.1:${address.port}`,
+      started_at: new Date().toISOString(),
     }),
-    (error: unknown) => error instanceof EvidenceClientError && error.code === "protocol_mismatch",
   );
+
+  const client = new DaemonEvidenceClient({ runtimeDir });
+  assert.deepEqual(
+    await client.preview("/work/repository", { kind: "working_tree", base: "HEAD" }),
+    expected,
+  );
+  for (let index = 0; index < 2; index += 1) {
+    await assert.rejects(
+      client.preview("/work/repository", { kind: "working_tree", base: "HEAD" }),
+      (error: unknown) => error instanceof EvidenceClientError && error.code === "protocol_mismatch",
+    );
+  }
 });
 
 test("sends one authenticated continuation request with only model metadata", async (t) => {
@@ -827,7 +888,7 @@ test("sends a Session-bound preview through the independent authenticated route"
 
   assert.deepEqual(result, emptyPreview());
   assert.deepEqual(requests, [{
-    url: "/v1/pi-session-evidence-previews",
+    url: "/v1/pi-session-go-context-evidence-previews",
     authorization: `PiLearnLoop ${token}`,
     body: JSON.stringify({
       repository: "/work/repository",
@@ -1043,6 +1104,7 @@ function emptyPreview() {
       base_revision: "base-sha",
       head_revision: "head-sha",
       files: [],
+      go_context: completeGoContext(),
       truncation: {
         truncated: false,
         omitted_files: 0,
@@ -1050,6 +1112,7 @@ function emptyPreview() {
         omitted_excerpt_bytes: 0,
       },
     },
+    continuation: { available: false as const, reason: "insufficient_evidence" as const },
   };
 }
 
@@ -1060,7 +1123,7 @@ function validQuestionSetResponse() {
       schema_version: 1,
       disposition: "questions",
       questions: [
-        { id: "Q1", kind: "code_specific", text: "Explain the changed behavior?", evidence_references: ["E001"] },
+        { id: "Q1", kind: "code_specific", text: "Explain the changed behavior?", evidence_references: ["C001"] },
         { id: "Q2", kind: "code_specific", text: "Which edge case matters?", evidence_references: ["E001"] },
         { id: "Q3", kind: "go_backend", text: "How would table-driven tests help?", evidence_references: [] },
       ],

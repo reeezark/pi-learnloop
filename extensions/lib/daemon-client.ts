@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, lstat } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { homedir } from "node:os";
@@ -12,6 +13,9 @@ import {
   type AssessmentSubmission,
   type EvidencePreviewResponse,
   type EvidenceSelection,
+  type GoContextBuild,
+  type GoContextItem,
+  type GoContextPreview,
   type LearningHistoryRecord,
   type LearningHistoryResponse,
   type PiSessionReviewResponse,
@@ -72,7 +76,7 @@ export class DaemonEvidenceClient implements LearnClient {
 
   async preview(repository: string, selection: EvidenceSelection): Promise<EvidencePreviewResponse> {
     return this.previewWithDiscoveryRace(
-      "/v1/evidence-previews",
+      "/v1/go-context-evidence-previews",
       { repository, selection },
     );
   }
@@ -86,7 +90,7 @@ export class DaemonEvidenceClient implements LearnClient {
       throw new EvidenceClientError("invalid_request", "Pi Session identity is invalid");
     }
     return this.previewWithDiscoveryRace(
-      "/v1/pi-session-evidence-previews",
+      "/v1/pi-session-go-context-evidence-previews",
       { repository, pi_session_id: piSessionID, selection },
     );
   }
@@ -455,20 +459,24 @@ function isMatchingStatus(value: unknown, instanceID: string): boolean {
 function isPreviewResponse(value: unknown): value is EvidencePreviewResponse {
   if (
     !isObject(value) ||
+    !hasOnlyKeys(value, "protocol_version", "applied_limits", "preview", "continuation") ||
     value.protocol_version !== 1 ||
     !isObject(value.applied_limits) ||
+    !hasOnlyKeys(value.applied_limits, "max_files", "max_declarations", "max_excerpt_bytes") ||
     value.applied_limits.max_files !== 20 ||
     value.applied_limits.max_declarations !== 100 ||
     value.applied_limits.max_excerpt_bytes !== 131_072 ||
     !isObject(value.preview) ||
-    typeof value.preview.repository_root !== "string" ||
-    typeof value.preview.base_revision !== "string" ||
-    typeof value.preview.head_revision !== "string" ||
+    !hasOnlyKeys(value.preview, "repository_root", "base_revision", "head_revision", "files", "go_context", "truncation") ||
+    !isAbsolutePreviewPath(value.preview.repository_root) ||
+    !isBoundedPreviewText(value.preview.base_revision, 256) ||
+    !isBoundedPreviewText(value.preview.head_revision, 256) ||
     !Array.isArray(value.preview.files) ||
     value.preview.files.length > 20 ||
     !value.preview.files.every(isEvidenceFile) ||
+    !isGoContextPreview(value.preview.go_context) ||
     !isTruncation(value.preview.truncation) ||
-    (value.continuation !== undefined && !isContinuation(value.continuation))
+    !isContinuation(value.continuation)
   ) {
     return false;
   }
@@ -481,19 +489,309 @@ function isPreviewResponse(value: unknown): value is EvidencePreviewResponse {
   return declarations.length <= 100 && excerptBytes <= 131_072;
 }
 
+function isGoContextPreview(value: unknown): value is GoContextPreview {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(
+      value,
+      "status",
+      "build",
+      "applied_limits",
+      "analyzed_package_count",
+      "analyzed_file_count",
+      "analyzed_source_bytes",
+      "direct_import_edges",
+      "item_count",
+      "relation_count",
+      "approximate_bytes",
+      "items",
+      "relations",
+      "omissions",
+      "truncation",
+    ) ||
+    !["complete", "partial", "unavailable"].includes(String(value.status)) ||
+    !isGoContextBuild(value.build) ||
+    !isGoContextLimits(value.applied_limits) ||
+    !isNonNegativeInteger(value.analyzed_package_count) || value.analyzed_package_count > 32 ||
+    !isNonNegativeInteger(value.analyzed_file_count) || value.analyzed_file_count > 160 ||
+    !isNonNegativeInteger(value.analyzed_source_bytes) || value.analyzed_source_bytes > 2_097_152 ||
+    !isNonNegativeInteger(value.direct_import_edges) || value.direct_import_edges > 256 ||
+    !Array.isArray(value.items) || value.items.length > 40 ||
+    !value.items.every((item, index) => isGoContextItem(item, index)) ||
+    value.item_count !== value.items.length ||
+    !Array.isArray(value.relations) || value.relations.length > 100 ||
+    !value.relations.every((relation) => isGoContextRelation(relation, value.items as GoContextItem[])) ||
+    value.relation_count !== value.relations.length ||
+    !Array.isArray(value.omissions) || !isGoContextOmissions(value.status, value.omissions, value.truncation) ||
+    !isGoContextTruncation(value.truncation) ||
+    !isNonNegativeInteger(value.approximate_bytes) || value.approximate_bytes > 65_536
+  ) {
+    return false;
+  }
+  if (value.status === "unavailable" && (value.items.length !== 0 || value.relations.length !== 0)) {
+    return false;
+  }
+  const paths = new Set(value.items.map((item) => item.path));
+  return paths.size <= 20 && value.approximate_bytes === goContextApproximateBytes(value as unknown as GoContextPreview);
+}
+
+function isGoContextLimits(value: unknown): value is GoContextPreview["applied_limits"] {
+  return (
+    isObject(value) &&
+    hasOnlyKeys(
+      value,
+      "max_changed_files",
+      "max_module_roots",
+      "max_packages",
+      "max_files_per_package",
+      "max_files",
+      "max_directory_entries",
+      "max_source_bytes_per_file",
+      "max_source_bytes",
+      "max_direct_import_edges",
+      "analysis_timeout_millis",
+      "max_output_files",
+      "max_output_items",
+      "max_relations",
+      "max_excerpt_bytes",
+      "max_output_bytes",
+      "max_evaluator_input_bytes",
+    ) &&
+    value.max_changed_files === 20 &&
+    value.max_module_roots === 8 &&
+    value.max_packages === 32 &&
+    value.max_files_per_package === 64 &&
+    value.max_files === 160 &&
+    value.max_directory_entries === 256 &&
+    value.max_source_bytes_per_file === 262_144 &&
+    value.max_source_bytes === 2_097_152 &&
+    value.max_direct_import_edges === 256 &&
+    value.analysis_timeout_millis === 30_000 &&
+    value.max_output_files === 20 &&
+    value.max_output_items === 40 &&
+    value.max_relations === 100 &&
+    value.max_excerpt_bytes === 4_096 &&
+    value.max_output_bytes === 65_536 &&
+    value.max_evaluator_input_bytes === 262_144
+  );
+}
+
+function isGoContextBuild(value: unknown): value is GoContextBuild {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(
+      value,
+      "goos",
+      "goarch",
+      "cgo_enabled",
+      "build_tags",
+      "tool_tags",
+      "release_tags",
+      "toolchain_version",
+      "test_variant",
+      "modules",
+      "workspaces",
+      "replacements",
+    ) ||
+    !isContextText(value.goos) ||
+    !isContextText(value.goarch) ||
+    value.cgo_enabled !== false ||
+    !Array.isArray(value.build_tags) || value.build_tags.length !== 0 ||
+    !Array.isArray(value.tool_tags) || !value.tool_tags.every(isContextText) ||
+    !Array.isArray(value.release_tags) || !value.release_tags.every(isContextText) ||
+    !isContextText(value.toolchain_version) ||
+    typeof value.test_variant !== "boolean" ||
+    !Array.isArray(value.modules) || !value.modules.every(isGoContextModule) ||
+    !Array.isArray(value.workspaces) || !value.workspaces.every(isGoContextWorkspace) ||
+    value.modules.length + value.workspaces.length > 8 ||
+    !Array.isArray(value.replacements) || !value.replacements.every(isGoContextReplacement)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isGoContextModule(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    hasOnlyKeys(value, "path", "directory", "go_version", "toolchain") &&
+    isContextText(value.path) &&
+    isOptionalPreviewPath(value.directory) &&
+    isContextText(value.go_version) &&
+    isOptionalContextText(value.toolchain)
+  );
+}
+
+function isGoContextWorkspace(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    hasOnlyKeys(value, "directory", "go_version", "toolchain") &&
+    isOptionalPreviewPath(value.directory) &&
+    isOptionalContextText(value.go_version) &&
+    isOptionalContextText(value.toolchain)
+  );
+}
+
+function isGoContextReplacement(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    hasOnlyKeys(value, "module_path", "directory", "repository_local") &&
+    isContextText(value.module_path) &&
+    isOptionalPreviewPath(value.directory) &&
+    typeof value.repository_local === "boolean" &&
+    (!value.repository_local || value.directory !== "")
+  );
+}
+
+function isGoContextItem(value: unknown, index: number): value is GoContextItem {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(
+      value,
+      "reference",
+      "kind",
+      "path",
+      "package_path",
+      "declaration_kind",
+      "identity",
+      "start_line",
+      "end_line",
+      "content",
+      "content_bytes",
+      "content_sha256",
+      "truncated",
+    ) ||
+    value.reference !== `C${String(index + 1).padStart(3, "0")}` ||
+    !["changed_import", "context_declaration"].includes(String(value.kind)) ||
+    !isPreviewPath(value.path) ||
+    !isContextText(value.package_path) ||
+    !isContextText(value.identity) ||
+    !isPositiveInteger(value.start_line) ||
+    !isPositiveInteger(value.end_line) || value.end_line < value.start_line ||
+    typeof value.content !== "string" || value.content === "" ||
+    !isNonNegativeInteger(value.content_bytes) ||
+    value.content_bytes !== Buffer.byteLength(value.content, "utf8") ||
+    value.content_bytes > 4_096 ||
+    typeof value.content_sha256 !== "string" ||
+    value.content_sha256 !== createHash("sha256").update(value.content, "utf8").digest("hex") ||
+    typeof value.truncated !== "boolean"
+  ) {
+    return false;
+  }
+  if (value.kind === "changed_import") {
+    return value.declaration_kind === "";
+  }
+  return ["function", "method", "type", "interface", "variable", "constant"].includes(String(value.declaration_kind));
+}
+
+function isGoContextRelation(value: unknown, items: GoContextItem[]): boolean {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(value, "from", "to", "kind", "strength") ||
+    !isContextText(value.from) ||
+    !isContextText(value.to)
+  ) {
+    return false;
+  }
+  if (String(value.to).startsWith("C") && !items.some((item) => item.reference === value.to)) {
+    return false;
+  }
+  return value.kind === "imports"
+    ? value.strength === "syntactic"
+    : ["references", "implements"].includes(String(value.kind)) && value.strength === "type_checked";
+}
+
+function isGoContextOmissions(status: unknown, values: unknown[], truncation: unknown): boolean {
+  const allowed = [
+    "analysis_limit_exceeded",
+    "unsupported_module_layout",
+    "unsupported_go_version",
+    "outside_repository_dependency",
+    "cgo_unsupported",
+    "external_type_unavailable",
+    "context_parse_error",
+    "type_incomplete",
+    "output_truncated",
+  ];
+  const reasons: string[] = [];
+  for (const value of values) {
+    if (
+      !isObject(value) ||
+      !hasOnlyKeys(value, "reason", "count") ||
+      !allowed.includes(String(value.reason)) ||
+      !isPositiveInteger(value.count)
+    ) {
+      return false;
+    }
+    reasons.push(String(value.reason));
+  }
+  if (new Set(reasons).size !== reasons.length || !isGoContextTruncation(truncation)) {
+    return false;
+  }
+  const hasOutputTruncation = reasons.includes("output_truncated");
+  if (truncation.truncated !== hasOutputTruncation) {
+    return false;
+  }
+  return status === "complete" ? values.length === 0 : values.length > 0;
+}
+
+function isGoContextTruncation(value: unknown): value is GoContextPreview["truncation"] {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(value, "truncated", "omitted_files", "omitted_items", "omitted_relations", "omitted_bytes") ||
+    typeof value.truncated !== "boolean" ||
+    !isNonNegativeInteger(value.omitted_files) ||
+    !isNonNegativeInteger(value.omitted_items) ||
+    !isNonNegativeInteger(value.omitted_relations) ||
+    !isNonNegativeInteger(value.omitted_bytes)
+  ) {
+    return false;
+  }
+  const hasCounts = value.omitted_files > 0 || value.omitted_items > 0 || value.omitted_relations > 0 || value.omitted_bytes > 0;
+  return value.truncated === hasCounts;
+}
+
+function goContextApproximateBytes(value: GoContextPreview): number {
+  let total = 0;
+  for (const module of value.build.modules) {
+    total += previewBytes(module.path, module.directory, module.go_version, module.toolchain);
+  }
+  for (const workspace of value.build.workspaces) {
+    total += previewBytes(workspace.directory, workspace.go_version, workspace.toolchain);
+  }
+  for (const replacement of value.build.replacements) {
+    total += previewBytes(replacement.module_path, replacement.directory);
+  }
+  for (const item of value.items) {
+    total += previewBytes(item.path, item.package_path, item.identity, item.content);
+  }
+  for (const relation of value.relations) {
+    total += previewBytes(relation.from, relation.to);
+  }
+  return total;
+}
+
+function previewBytes(...values: string[]): number {
+  return values.reduce((total, value) => total + Buffer.byteLength(value, "utf8"), 0);
+}
+
 function isContinuation(value: unknown): boolean {
   if (!isObject(value) || typeof value.available !== "boolean") {
     return false;
   }
   if (value.available) {
     return (
+      hasOnlyKeys(value, "available", "id", "expires_at") &&
       typeof value.id === "string" &&
       /^pc1-[A-Za-z0-9_-]{43}$/.test(value.id) &&
       typeof value.expires_at === "string" &&
       Number.isFinite(Date.parse(value.expires_at))
     );
   }
-  return ["insufficient_evidence", "capacity", "evaluator_unavailable"].includes(String(value.reason));
+  return (
+    hasOnlyKeys(value, "available", "reason") &&
+    ["insufficient_evidence", "capacity", "evaluator_unavailable"].includes(String(value.reason))
+  );
 }
 
 function isQuestionSetResponse(value: unknown): value is {
@@ -527,13 +825,11 @@ function isQuestionSetResponse(value: unknown): value is {
       question.text.trim() === "" ||
       Buffer.byteLength(question.text, "utf8") > 1_000 ||
       /[\u0000-\u001f\u007f-\u009f]/u.test(question.text) ||
-      !Array.isArray(question.evidence_references) ||
-      !question.evidence_references.every((reference) => typeof reference === "string") ||
-      new Set(question.evidence_references).size !== question.evidence_references.length
+      !validEvidenceReferences(question.evidence_references, question.kind === "code_specific")
     ) {
       return false;
     }
-    return question.kind !== "code_specific" || question.evidence_references.length > 0;
+    return true;
   });
   return validQuestions && (value.assessment === undefined || isAssessmentDescriptor(value.assessment));
 }
@@ -796,7 +1092,7 @@ function validEvidenceReferences(value: unknown, required: boolean): value is st
   return (
     Array.isArray(value) &&
     (!required || value.length > 0) &&
-    value.every((reference) => typeof reference === "string" && /^E[0-9]{3}$/.test(reference)) &&
+    value.every((reference) => typeof reference === "string" && /^[EC][0-9]{3}$/.test(reference)) &&
     new Set(value).size === value.length
   );
 }
@@ -809,10 +1105,8 @@ function hasOnlyKeys(value: Record<string, unknown>, ...keys: string[]): boolean
 function isEvidenceFile(value: unknown): value is EvidencePreviewResponse["preview"]["files"][number] {
   return (
     isObject(value) &&
-    typeof value.path === "string" &&
-    value.path !== "" &&
-    !value.path.startsWith("/") &&
-    !value.path.split("/").includes("..") &&
+    hasOnlyKeys(value, "path", "status", "changed_lines", "declarations", "omissions") &&
+    isPreviewPath(value.path) &&
     ["added", "modified", "deleted"].includes(String(value.status)) &&
     Array.isArray(value.changed_lines) &&
     value.changed_lines.every(isLineRange) &&
@@ -826,16 +1120,17 @@ function isEvidenceFile(value: unknown): value is EvidencePreviewResponse["previ
 function isDeclaration(value: unknown): value is EvidencePreviewResponse["preview"]["files"][number]["declarations"][number] {
   return (
     isObject(value) &&
+    hasOnlyKeys(value, "kind", "name", "receiver", "identity", "start_line", "end_line", "changed_lines", "excerpt", "excerpt_truncated") &&
     ["function", "method", "type", "interface", "variable", "constant"].includes(String(value.kind)) &&
-    typeof value.name === "string" &&
-    typeof value.receiver === "string" &&
-    typeof value.identity === "string" &&
+    isContextText(value.name) &&
+    isOptionalContextText(value.receiver) &&
+    isContextText(value.identity) &&
     isPositiveInteger(value.start_line) &&
     isPositiveInteger(value.end_line) &&
     value.end_line >= value.start_line &&
     Array.isArray(value.changed_lines) &&
     value.changed_lines.every(isLineRange) &&
-    typeof value.excerpt === "string" &&
+    typeof value.excerpt === "string" && value.excerpt !== "" &&
     typeof value.excerpt_truncated === "boolean"
   );
 }
@@ -843,6 +1138,7 @@ function isDeclaration(value: unknown): value is EvidencePreviewResponse["previe
 function isLineRange(value: unknown): value is { start: number; end: number } {
   return (
     isObject(value) &&
+    hasOnlyKeys(value, "start", "end") &&
     isPositiveInteger(value.start) &&
     isPositiveInteger(value.end) &&
     value.end >= value.start
@@ -852,19 +1148,59 @@ function isLineRange(value: unknown): value is { start: number; end: number } {
 function isOmission(value: unknown): boolean {
   return (
     isObject(value) &&
+    hasOnlyKeys(value, "reason", "count") &&
     ["deleted_file", "deleted_only_hunk", "outside_declaration"].includes(String(value.reason)) &&
-    isNonNegativeInteger(value.count)
+    isPositiveInteger(value.count)
   );
 }
 
 function isTruncation(value: unknown): boolean {
-  return (
+  if (!(
     isObject(value) &&
+    hasOnlyKeys(value, "truncated", "omitted_files", "omitted_declarations", "omitted_excerpt_bytes") &&
     typeof value.truncated === "boolean" &&
     isNonNegativeInteger(value.omitted_files) &&
     isNonNegativeInteger(value.omitted_declarations) &&
     isNonNegativeInteger(value.omitted_excerpt_bytes)
+  )) {
+    return false;
+  }
+  const hasCounts = value.omitted_files > 0 || value.omitted_declarations > 0 || value.omitted_excerpt_bytes > 0;
+  return value.truncated === hasCounts;
+}
+
+function isAbsolutePreviewPath(value: unknown): value is string {
+  return typeof value === "string" && value !== "" && Buffer.byteLength(value, "utf8") <= MAX_RESPONSE_BYTES && value.startsWith("/");
+}
+
+function isPreviewPath(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value !== "" &&
+    Buffer.byteLength(value, "utf8") <= MAX_RESPONSE_BYTES &&
+    !value.startsWith("/") &&
+    !value.includes("\\") &&
+    value.split("/").every((part) => part !== "" && part !== "." && part !== "..")
   );
+}
+
+function isOptionalPreviewPath(value: unknown): value is string {
+  return value === "" || isPreviewPath(value);
+}
+
+function isContextText(value: unknown): value is string {
+  return isBoundedPreviewText(value, MAX_RESPONSE_BYTES);
+}
+
+function isOptionalContextText(value: unknown): value is string {
+  return value === "" || isContextText(value);
+}
+
+function isBoundedPreviewText(value: unknown, maximumBytes: number): value is string {
+  if (typeof value !== "string" || value === "" || Buffer.byteLength(value, "utf8") > maximumBytes) {
+    return false;
+  }
+  return !/\p{Cc}/u.test(value);
 }
 
 function isPositiveInteger(value: unknown): value is number {

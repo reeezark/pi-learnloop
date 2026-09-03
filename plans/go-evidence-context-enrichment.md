@@ -1,9 +1,9 @@
 ---
 id: go-evidence-context-enrichment
-status: active
+status: complete
 risk: high
 current_phase: 3
-phase_status: awaiting_approval
+phase_status: complete
 updated: 2026-09-03
 ---
 
@@ -56,8 +56,9 @@ The loader, build-configuration, external-fact, dependency, budget, and omission
 choices are resolved below. Phase 1 completed and validated the selected
 internal design without any route, evaluator, prompt, extension, database, or
 user-visible behavior change. Phase 1 was committed and pushed as `477c1aa` on
-2026-09-03. Phase 2 was explicitly authorized and completed on 2026-09-03.
-Phase 3 is not authorized.
+2026-09-03. Phase 2 was explicitly authorized, completed, committed, and pushed
+as `4179ef7` on 2026-09-03. Phase 3 was explicitly authorized and completed on
+2026-09-03. All three phases are complete.
 
 Each later phase also requires explicit authorization after the previous phase
 has completed and been verified.
@@ -847,7 +848,8 @@ enriched evidence before any provider invocation.
 
 ### Allowed Files
 
-- `extensions/pi-learnloop/**`
+- `extensions/pi-learnloop.ts`
+- `extensions/lib/**`
 - extension packaging/test files required by the existing package workflow
 - `README.md`
 - `PROJECT.md`
@@ -884,10 +886,42 @@ enriched evidence before any provider invocation.
   incompatibility.
 - Packaging, Go, governance, and full repository checks pass.
 
+### Phase 3 Result
+
+Completed and verified on 2026-09-03:
+
+- Routed both direct Git and explicit Session/Git selections through the two
+  additive Go-context preview routes. The updated client never calls or falls
+  back to the legacy v1 preview routes.
+- Added one strict enriched-response validator behind the daemon-client
+  interface. It requires exact keys and fixed limits, validates all build,
+  item, relationship, omission, count, truncation, C-reference, content-hash,
+  and repository-derived byte invariants, and rejects old-daemon or unknown
+  response shapes before display.
+- Rendered every model-visible changed declaration and C-series context item,
+  including evidence kind, full safely escaped content, byte count, SHA-256,
+  paths, identities, line ranges, relationships, build configuration, analysis
+  totals, fixed input/output limits, completeness, omissions, and truncation.
+- Updated question and assessment reference validation to accept the v2
+  E-series and C-series vocabulary without changing the output schema.
+- Updated both confirmation steps to name the active model, describe the full
+  displayed evidence scope, report the exact repository-derived evidence-byte
+  estimate and 256-KiB input ceiling, and state that provider price is unknown.
+- Preserved explicit Session binding and ID isolation, cancellation before any
+  continuation/model/history action, single-use continuation behavior,
+  questions, answers, optional F1, result/history rendering, and no-retry rules.
+  Partial and unavailable context require the same visible confirmation and do
+  not trigger hidden v1 fallback.
+- Added extension coverage for generic and Session routes, commit and working
+  tree selections, import-only/partial/unavailable/truncated displays, rich
+  response integrity, C references, cancellation, unknown fields, and old
+  daemon incompatibility. No dependency, package manifest, daemon, evaluator,
+  evidence, database, or existing v1 route change was made.
+
 ### Stop Condition
 
-After verification, mark the plan and its Phase 3 checkpoint complete and stop.
-Commit or push only when explicitly authorized by the user.
+The plan and Phase 3 checkpoint are complete. Stop after reporting. Commit or
+push Phase 3 only when explicitly authorized by the user.
 
 ## Risks and Mitigations
 

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type EvidenceSelection =
   | { kind: "commit_range"; base: string; head: string }
   | { kind: "working_tree"; base: string };
@@ -30,6 +32,115 @@ export interface EvidenceFile {
   }>;
 }
 
+export interface GoContextModule {
+  path: string;
+  directory: string;
+  go_version: string;
+  toolchain: string;
+}
+
+export interface GoContextWorkspace {
+  directory: string;
+  go_version: string;
+  toolchain: string;
+}
+
+export interface GoContextReplacement {
+  module_path: string;
+  directory: string;
+  repository_local: boolean;
+}
+
+export interface GoContextBuild {
+  goos: string;
+  goarch: string;
+  cgo_enabled: false;
+  build_tags: string[];
+  tool_tags: string[];
+  release_tags: string[];
+  toolchain_version: string;
+  test_variant: boolean;
+  modules: GoContextModule[];
+  workspaces: GoContextWorkspace[];
+  replacements: GoContextReplacement[];
+}
+
+export interface GoContextAppliedLimits {
+  max_changed_files: 20;
+  max_module_roots: 8;
+  max_packages: 32;
+  max_files_per_package: 64;
+  max_files: 160;
+  max_directory_entries: 256;
+  max_source_bytes_per_file: 262144;
+  max_source_bytes: 2097152;
+  max_direct_import_edges: 256;
+  analysis_timeout_millis: 30000;
+  max_output_files: 20;
+  max_output_items: 40;
+  max_relations: 100;
+  max_excerpt_bytes: 4096;
+  max_output_bytes: 65536;
+  max_evaluator_input_bytes: 262144;
+}
+
+export interface GoContextItem {
+  reference: string;
+  kind: "changed_import" | "context_declaration";
+  path: string;
+  package_path: string;
+  declaration_kind: "" | EvidenceDeclaration["kind"];
+  identity: string;
+  start_line: number;
+  end_line: number;
+  content: string;
+  content_bytes: number;
+  content_sha256: string;
+  truncated: boolean;
+}
+
+export interface GoContextRelation {
+  from: string;
+  to: string;
+  kind: "imports" | "references" | "implements";
+  strength: "syntactic" | "type_checked";
+}
+
+export interface GoContextPreview {
+  status: "complete" | "partial" | "unavailable";
+  build: GoContextBuild;
+  applied_limits: GoContextAppliedLimits;
+  analyzed_package_count: number;
+  analyzed_file_count: number;
+  analyzed_source_bytes: number;
+  direct_import_edges: number;
+  item_count: number;
+  relation_count: number;
+  approximate_bytes: number;
+  items: GoContextItem[];
+  relations: GoContextRelation[];
+  omissions: Array<{
+    reason:
+      | "analysis_limit_exceeded"
+      | "unsupported_module_layout"
+      | "unsupported_go_version"
+      | "outside_repository_dependency"
+      | "cgo_unsupported"
+      | "external_type_unavailable"
+      | "context_parse_error"
+      | "type_incomplete"
+      | "output_truncated";
+    count: number;
+  }>;
+  truncation: {
+    truncated: boolean;
+    omitted_files: number;
+    omitted_items: number;
+    omitted_relations: number;
+    omitted_bytes: number;
+  };
+}
+
 export interface EvidencePreviewResponse {
   protocol_version: 1;
   applied_limits: {
@@ -42,6 +153,7 @@ export interface EvidencePreviewResponse {
     base_revision: string;
     head_revision: string;
     files: EvidenceFile[];
+    go_context: GoContextPreview;
     truncation: {
       truncated: boolean;
       omitted_files: number;
@@ -49,7 +161,7 @@ export interface EvidencePreviewResponse {
       omitted_excerpt_bytes: number;
     };
   };
-  continuation?:
+  continuation:
     | {
         available: true;
         id: string;
@@ -450,9 +562,11 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", li
       );
       return;
     }
+    const disclosedEvidenceBytes = approximateDisclosedEvidenceBytes(response);
+    const modelDescription = `${displayInline(evaluatorSelection.provider)}/${displayInline(evaluatorSelection.id)} (thinking=${evaluatorSelection.thinking_level})`;
     const confirmed = await context.ui.confirm(
       "Generate learning questions?",
-      "One evaluation will send only the selected excerpts shown above to your configured model. This may incur provider cost, and Pi/provider transport may retry transient network failures according to your Pi configuration. Continue?",
+      `Model: ${modelDescription}. One evaluation will send the changed Go file/declaration metadata and excerpts, selected-snapshot Go context items and metadata, relationships, build configuration, limits, completeness, omissions, and truncation shown above. Estimated repository-derived evidence is ${disclosedEvidenceBytes} bytes; the complete evaluator input is capped at ${response.preview.go_context.applied_limits.max_evaluator_input_bytes} bytes. Pi LearnLoop does not know this provider's price, so the call may incur provider cost, and Pi/provider transport may retry transient network failures according to your Pi configuration. Continue?`,
     );
     if (!confirmed) {
       return;
@@ -481,7 +595,7 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", li
       }
       const assessConfirmed = await context.ui.confirm(
         "Assess these answers?",
-        "One evaluation will send the same selected excerpts and your three answers to the configured model. This may incur provider cost. If one follow-up is needed, submitting its answer causes one additional evaluation, and Pi/provider transport may retry according to your Pi configuration. Continue?",
+        `Model: ${modelDescription}. One evaluation will resend the same ${disclosedEvidenceBytes} bytes of displayed repository-derived evidence together with your three answers. Pi LearnLoop does not know this provider's price, so the call may incur provider cost. If one follow-up is needed, submitting its answer causes one additional evaluation, and Pi/provider transport may retry according to your Pi configuration. Continue?`,
       );
       if (!assessConfirmed) {
         return;
@@ -754,9 +868,27 @@ export function formatPreview(response: EvidencePreviewResponse, piSessionID?: s
     (total, declaration) => total + Buffer.byteLength(declaration.excerpt, "utf8"),
     0,
   );
-  const fileLines = preview.files.map((file) => {
-    const symbols = file.declarations.map((declaration) => declaration.identity).join(", ");
-    return `- ${file.path} (${file.status}): ${symbols || "no mapped declarations"}`;
+  let evidenceIndex = 0;
+  const fileLines = preview.files.flatMap((file) => {
+    const lines = [
+      `- ${displayInline(file.path)} (${file.status}) · changed lines ${formatLineRanges(file.changed_lines)}`,
+      `  File omissions: ${formatCounts(file.omissions)}`,
+    ];
+    if (file.declarations.length === 0) {
+      lines.push("  Changed declarations: none");
+      return lines;
+    }
+    for (const declaration of file.declarations) {
+      evidenceIndex += 1;
+      const reference = `E${String(evidenceIndex).padStart(3, "0")}`;
+      const contentSHA256 = createHash("sha256").update(declaration.excerpt, "utf8").digest("hex");
+      lines.push(
+        `  ${reference} ${displayInline(declaration.identity)} · ${declaration.kind} · evidence_kind=${file.path.endsWith("_test.go") ? "test" : "code"} · lines ${declaration.start_line}-${declaration.end_line} · changed ${formatLineRanges(declaration.changed_lines)} · ${Buffer.byteLength(declaration.excerpt, "utf8")} bytes · sha256=${contentSHA256} · truncated=${declaration.excerpt_truncated}`,
+        "    Excerpt (untrusted repository content; controls escaped for display):",
+        indentEvidence(declaration.excerpt),
+      );
+    }
+    return lines;
   });
   if (fileLines.length === 0) {
     fileLines.push("No changed Go code was found for this selection. Choose another revision or change Go code, then run /learn again.");
@@ -765,14 +897,116 @@ export function formatPreview(response: EvidencePreviewResponse, piSessionID?: s
     ? `Truncated: ${preview.truncation.omitted_files} files, ${preview.truncation.omitted_declarations} symbols, ${preview.truncation.omitted_excerpt_bytes} excerpt bytes omitted`
     : "Truncation: none";
 
+  const context = preview.go_context;
+  const build = context.build;
+  const contextItemLines = context.items.length === 0
+    ? ["- none"]
+    : context.items.flatMap((item) => [
+      `- ${item.reference} ${displayInline(item.identity)} · ${item.kind}${item.declaration_kind === "" ? "" : `/${item.declaration_kind}`} · ${displayInline(item.path)}:${item.start_line}-${item.end_line} · package=${displayInline(item.package_path)} · ${item.content_bytes} bytes · sha256=${item.content_sha256} · truncated=${item.truncated}`,
+      "  Content (untrusted repository content; controls escaped for display):",
+      indentEvidence(item.content),
+    ]);
+  const relationLines = context.relations.length === 0
+    ? ["- none"]
+    : context.relations.map((relation) =>
+      `- ${displayInline(relation.from)} --${relation.kind}/${relation.strength}--> ${displayInline(relation.to)}`
+    );
+  const moduleLines = build.modules.length === 0
+    ? ["- Modules: none"]
+    : build.modules.map((module) =>
+      `- Module: ${displayInline(module.path)} · directory=${displayOptional(module.directory)} · go=${displayInline(module.go_version)} · toolchain=${displayOptional(module.toolchain)}`
+    );
+  const workspaceLines = build.workspaces.length === 0
+    ? ["- Workspaces: none"]
+    : build.workspaces.map((workspace) =>
+      `- Workspace: directory=${displayOptional(workspace.directory)} · go=${displayOptional(workspace.go_version)} · toolchain=${displayOptional(workspace.toolchain)}`
+    );
+  const replacementLines = build.replacements.length === 0
+    ? ["- Replacements: none"]
+    : build.replacements.map((replacement) =>
+      `- Replacement: ${displayInline(replacement.module_path)} · directory=${displayOptional(replacement.directory)} · repository_local=${replacement.repository_local}`
+    );
+
   return [
-    "Evidence preview",
+    "Enriched evidence preview",
     ...(piSessionID === undefined
       ? [`Selection: ${preview.base_revision}..${preview.head_revision}`]
       : [`User-selected association: Pi Session ${piSessionID} ↔ Git changeset ${preview.base_revision}..${preview.head_revision}`]),
-    `Files: ${preview.files.length} | Symbols: ${declarations.length} | Approx. excerpt: ${excerptBytes} bytes`,
+    `Changed evidence: ${preview.files.length} files · ${declarations.length} declarations · ${excerptBytes} excerpt bytes`,
+    `Changed-evidence limits: files=${response.applied_limits.max_files} · declarations=${response.applied_limits.max_declarations} · excerpt_bytes=${response.applied_limits.max_excerpt_bytes}`,
     ...fileLines,
-    truncation,
+    `Changed-evidence ${truncation}`,
+    "",
+    `Go context: ${context.status}`,
+    `Analysis totals: packages=${context.analyzed_package_count} · files=${context.analyzed_file_count} · source_bytes=${context.analyzed_source_bytes} · direct_import_edges=${context.direct_import_edges}`,
+    `Selected context: items=${context.item_count} · relations=${context.relation_count} · repository-derived_bytes=${context.approximate_bytes}`,
+    `Build: GOOS=${displayInline(build.goos)} · GOARCH=${displayInline(build.goarch)} · CGO_ENABLED=${build.cgo_enabled ? "1" : "0"} · test_variant=${build.test_variant} · toolchain=${displayInline(build.toolchain_version)}`,
+    `Build tags: ${displayList(build.build_tags)} · Tool tags: ${displayList(build.tool_tags)} · Release tags: ${displayList(build.release_tags)}`,
+    ...moduleLines,
+    ...workspaceLines,
+    ...replacementLines,
+    "Context input limits:",
+    `- changed_files=${context.applied_limits.max_changed_files} · module_roots=${context.applied_limits.max_module_roots} · packages=${context.applied_limits.max_packages} · files_per_package=${context.applied_limits.max_files_per_package} · files=${context.applied_limits.max_files} · directory_entries=${context.applied_limits.max_directory_entries}`,
+    `- source_bytes_per_file=${context.applied_limits.max_source_bytes_per_file} · source_bytes=${context.applied_limits.max_source_bytes} · direct_import_edges=${context.applied_limits.max_direct_import_edges} · analysis_timeout_ms=${context.applied_limits.analysis_timeout_millis}`,
+    "Context output limits:",
+    `- files=${context.applied_limits.max_output_files} · items=${context.applied_limits.max_output_items} · relations=${context.applied_limits.max_relations} · excerpt_bytes=${context.applied_limits.max_excerpt_bytes} · repository-derived_bytes=${context.applied_limits.max_output_bytes} · evaluator_input_bytes=${context.applied_limits.max_evaluator_input_bytes}`,
+    "Context evidence:",
+    ...contextItemLines,
+    "Context relationships:",
+    ...relationLines,
+    `Context omissions: ${formatCounts(context.omissions)}`,
+    context.truncation.truncated
+      ? `Context truncation: ${context.truncation.omitted_files} files, ${context.truncation.omitted_items} items, ${context.truncation.omitted_relations} relationships, ${context.truncation.omitted_bytes} bytes omitted`
+      : "Context truncation: none",
     "Preview only: no model was called and nothing was saved.",
   ].join("\n");
+}
+
+function approximateDisclosedEvidenceBytes(response: EvidencePreviewResponse): number {
+  const changedBytes = response.preview.files.reduce(
+    (total, file) => total + file.declarations.reduce(
+      (fileTotal, declaration) => fileTotal + Buffer.byteLength(declaration.excerpt, "utf8"),
+      0,
+    ),
+    0,
+  );
+  return changedBytes + response.preview.go_context.approximate_bytes;
+}
+
+function formatLineRanges(ranges: LineRange[]): string {
+  return ranges.length === 0 ? "none" : ranges.map((lineRange) =>
+    lineRange.start === lineRange.end ? String(lineRange.start) : `${lineRange.start}-${lineRange.end}`
+  ).join(", ");
+}
+
+function formatCounts(values: ReadonlyArray<{ reason: string; count: number }>): string {
+  return values.length === 0 ? "none" : values.map((value) => `${value.reason}=${value.count}`).join(", ");
+}
+
+function displayList(values: string[]): string {
+  return values.length === 0 ? "none" : values.map((value) => displayInline(value)).join(", ");
+}
+
+function displayOptional(value: string): string {
+  return value === "" ? "none" : displayInline(value);
+}
+
+function indentEvidence(content: string): string {
+  return displayInline(content, true).split("\n").map((line) => `      | ${line}`).join("\n");
+}
+
+function displayInline(value: string, preserveNewlines = false): string {
+  let result = "";
+  for (const character of value) {
+    if (preserveNewlines && character === "\n") {
+      result += character;
+      continue;
+    }
+    if (/^[\p{Cc}\p{Cf}\p{Cs}]$/u.test(character)) {
+      result += `\\u{${character.codePointAt(0)!.toString(16)}}`;
+      continue;
+    }
+    result += character;
+  }
+  return result;
 }

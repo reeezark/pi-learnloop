@@ -68,8 +68,8 @@ snapshot.
 This decision was accepted on 2026-09-02. The same authorization started Phase 1
 and explicitly permitted direct `golang.org/x/mod v0.19.0`. Phase 2 routes,
 evaluator contracts, and prompts were separately authorized and completed on
-2026-09-03. Phase 3 extension behavior remains separately gated and is not
-authorized by this ADR alone.
+2026-09-03. Phase 3 extension behavior was separately authorized and completed
+on 2026-09-03.
 
 ### 1. Preserve and deepen the evidence module
 
