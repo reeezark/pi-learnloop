@@ -48,7 +48,15 @@ type Request struct {
 	Repository string
 	Selection  Selection
 	Limits     Limits
+	Context    ContextMode
 }
+
+type ContextMode string
+
+const (
+	ContextDisabled ContextMode = ""
+	ContextGo       ContextMode = "go"
+)
 
 type ErrorCode string
 
@@ -95,6 +103,7 @@ type Result struct {
 	AppliedLimits  Limits
 	Files          []File
 	Truncation     Truncation
+	GoContext      *GoContext
 }
 
 type File struct {
@@ -167,6 +176,9 @@ func Preview(ctx context.Context, request Request) (Result, error) {
 	if err := validateRequest(request); err != nil {
 		return Result{}, err
 	}
+	if request.Context == ContextGo {
+		ctx = withLocalOnlyGit(ctx)
+	}
 
 	root, err := ResolveRepositoryRoot(ctx, request.Repository)
 	if err != nil {
@@ -235,6 +247,9 @@ func Preview(ctx context.Context, request Request) (Result, error) {
 	}
 
 	applyLimits(&result, request.Limits)
+	if request.Context == ContextGo {
+		result.GoContext = analyzeGoContext(ctx, root, head, result)
+	}
 	return result, nil
 }
 
@@ -247,6 +262,9 @@ func validateRequest(request Request) error {
 	}
 	if request.Limits.MaxFiles <= 0 || request.Limits.MaxDeclarations <= 0 || request.Limits.MaxExcerptBytes <= 0 {
 		return previewError(ErrorInvalidRequest, "validate request", errors.New("all evidence limits must be positive"))
+	}
+	if request.Context != ContextDisabled && request.Context != ContextGo {
+		return previewError(ErrorInvalidRequest, "validate request", errors.New("context mode is invalid"))
 	}
 	return nil
 }
@@ -612,6 +630,7 @@ func splitNUL(output []byte) []string {
 
 func gitOutput(ctx context.Context, root string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	command.Env = gitCommandEnvironment(ctx)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
@@ -621,6 +640,24 @@ func gitOutput(ctx context.Context, root string, args ...string) ([]byte, error)
 		return nil, errors.New(message)
 	}
 	return output, nil
+}
+
+type localOnlyGitContextKey struct{}
+
+func withLocalOnlyGit(ctx context.Context) context.Context {
+	return context.WithValue(ctx, localOnlyGitContextKey{}, struct{}{})
+}
+
+func gitCommandEnvironment(ctx context.Context) []string {
+	if _, localOnly := ctx.Value(localOnlyGitContextKey{}).(struct{}); !localOnly {
+		return nil
+	}
+	environment := append([]string(nil), os.Environ()...)
+	return append(environment,
+		"GIT_NO_LAZY_FETCH=1",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_OPTIONAL_LOCKS=0",
+	)
 }
 
 func previewError(code ErrorCode, operation string, err error) error {

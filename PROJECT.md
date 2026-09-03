@@ -2,7 +2,7 @@
 
 Pi LearnLoop is a local learning companion for Go developers using the Pi coding agent. Its implemented core lets a developer manually select an Agent-produced Git changeset, analyze the real Go code changes, complete a short evidence-backed technical interview, and inspect source-free local outcomes. The purpose is to verify that the developer can explain the code rather than merely accept AI-generated output.
 
-Current repository status: Agent-development governance, the complete three-phase post-preview question-generation slice accepted in ADR-0003, the complete three-phase volatile answer-assessment slice accepted in ADR-0004, the complete three-phase durable-learning-history slice accepted in ADR-0005, and the complete three-phase explicit Pi Session provenance slice accepted in ADR-0006. The `pi-learnloop daemon` command exposes explicit commit-range and working-tree previews, retains the exact bounded result behind a five-minute single-use in-memory continuation, and serves strict authenticated question, assessment, repository-history, Session-bound preview, and completion-only Session-review requests. A thin Pi TypeScript extension registers manual `/learn` and `/learn-history`: `/learn` supports the existing direct Git selections plus a manual current-cwd Pi Session path that immediately projects the newest at most 20 results to unique bounded IDs, filters completed reviews once, requires an explicit Git association, renders the preview and association first, then preserves the existing model-sharing confirmations, Q1/Q2/Q3 plus at most one F1, and evidence-backed feedback with a deterministic Go-derived label; `/learn-history` retrieves the 20 newest source-free records for the current canonical repository without a model call. Question generation and each assessment turn use a fresh no-session, no-tools Pi 0.84.3 RPC process with released embedded prompts and shared private isolation mechanics. The daemon owns the protected `internal/history` SQLite lifecycle. Schema v2 stores only a nullable bounded Pi Session ID; the dedicated daemon path keeps it outside evidence and model-visible values, propagates it to Session-aware history, and returns only completed candidate IDs for the canonical repository. The direct Git path stores SQL `NULL`. History still records only source-free running/F1/terminal facts, recovers unfinished rows as interrupted without an evaluator call, and reports save failure without hiding or retrying a successful assessment. Pi 0.84.3's accepted list-time privacy/resource limitation remains explicit: it materializes unused candidate messages and metadata in extension memory before LearnLoop can retain only IDs. SSE and durable worker coordination remain unimplemented.
+Current repository status: Agent-development governance, the complete three-phase post-preview question-generation slice accepted in ADR-0003, the complete three-phase volatile answer-assessment slice accepted in ADR-0004, the complete three-phase durable-learning-history slice accepted in ADR-0005, the complete three-phase explicit Pi Session provenance slice accepted in ADR-0006, and the completed internal Phase 1 snapshot/type-analysis proof accepted in ADR-0007. The ADR-0007 proof is not daemon- or extension-reachable: current product routes still use the unchanged v1 changed-declaration evidence path, while the internal opt-in mode is held behind `internal/evidence.Preview` and cannot enter `evidence-bundle@1`. The `pi-learnloop daemon` command exposes explicit commit-range and working-tree previews, retains the exact bounded result behind a five-minute single-use in-memory continuation, and serves strict authenticated question, assessment, repository-history, Session-bound preview, and completion-only Session-review requests. A thin Pi TypeScript extension registers manual `/learn` and `/learn-history`: `/learn` supports the existing direct Git selections plus a manual current-cwd Pi Session path that immediately projects the newest at most 20 results to unique bounded IDs, filters completed reviews once, requires an explicit Git association, renders the preview and association first, then preserves the existing model-sharing confirmations, Q1/Q2/Q3 plus at most one F1, and evidence-backed feedback with a deterministic Go-derived label; `/learn-history` retrieves the 20 newest source-free records for the current canonical repository without a model call. Question generation and each assessment turn use a fresh no-session, no-tools Pi 0.84.3 RPC process with released embedded prompts and shared private isolation mechanics. The daemon owns the protected `internal/history` SQLite lifecycle. Schema v2 stores only a nullable bounded Pi Session ID; the dedicated daemon path keeps it outside evidence and model-visible values, propagates it to Session-aware history, and returns only completed candidate IDs for the canonical repository. The direct Git path stores SQL `NULL`. History still records only source-free running/F1/terminal facts, recovers unfinished rows as interrupted without an evaluator call, and reports save failure without hiding or retrying a successful assessment. Pi 0.84.3's accepted list-time privacy/resource limitation remains explicit: it materializes unused candidate messages and metadata in extension memory before LearnLoop can retain only IDs. Enriched routes/evaluator contracts/UI, SSE, and durable worker coordination remain unimplemented.
 
 # Project Goals
 
@@ -30,7 +30,7 @@ The initial product scope does not include:
 
 # Tech Stack
 
-The Go module uses the standard library, the local `git` executable, and the approved pure-Go `modernc.org/sqlite v1.35.0` driver. The broader approved target remains partly unimplemented:
+The Go module uses the standard library, the local `git` executable, direct `golang.org/x/mod v0.19.0` for in-memory selected-snapshot module/workspace parsing and path validation, and the approved pure-Go `modernc.org/sqlite v1.35.0` driver. The broader approved target remains partly unimplemented:
 
 | Area | Target | Current Status |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ The Go module uses the standard library, the local `git` executable, and the app
 | Pi integration | Thin TypeScript Pi extension | Manual Git or bounded current-cwd Session selection, explicit Session-to-Git binding, preview, model-sharing confirmations, three-answer collection, optional F1, and final-result rendering implemented against Pi 0.84.3 |
 | Agent integration | Pi RPC with an isolated no-tools evaluator Session | Production Pi 0.84.3 question and assessment adapters, released embedded prompts, strict JSONL/output bounds, and fake-process verification implemented |
 | Storage | Local SQLite in WAL mode | Protected schema-v2 history with nullable bounded Pi Session provenance, daemon assessment-lifecycle recording, bounded authenticated repository and completion-only Session queries, and manual generic-history UI rendering implemented |
-| Go analysis | `go/parser`, later `go/types` and `golang.org/x/tools/go/packages` | Syntax-level changed-declaration mapping and an evaluator-ready bundle projection are implemented; type/dependency analysis remains planned |
+| Go analysis | `go/parser`, `go/build`, `go/types`, and `golang.org/x/mod/modfile` | Product v1 uses syntax-level changed declarations; an internal bounded selected-snapshot context mode is implemented and verified but has no daemon/evaluator/UI path; `go/packages` is intentionally not used |
 | Extension transport | Local HTTP plus later SSE on `127.0.0.1` | Versioned authenticated evidence-preview, Session-bound preview, Session-review, single-use question-set, assessment-turn, and bounded learning-history-query operations and clients implemented; SSE is not implemented |
 | Supported platform | macOS ARM64 and AMD64 | macOS ARM64 verified locally; AMD64 remains unverified |
 
@@ -82,7 +82,12 @@ The repository currently contains Agent-development governance, the evidence/con
 │   ├── bundle.go
 │   ├── bundle_test.go
 │   ├── evidence.go
-│   └── evidence_test.go
+│   ├── evidence_test.go
+│   ├── go_context.go
+│   ├── go_context_internal_test.go
+│   ├── go_context_test.go
+│   ├── snapshot.go
+│   └── snapshot_test.go
 ├── internal/evaluator/
 │   ├── assessment_contract.go
 │   ├── assessment_contract_test.go
@@ -137,7 +142,8 @@ The repository currently contains Agent-development governance, the evidence/con
 │   ├── post-preview-evaluator-adapter.md
 │   ├── answer-assessment-workflow.md
 │   ├── durable-learning-history.md
-│   └── explicit-pi-session-review.md
+│   ├── explicit-pi-session-review.md
+│   └── go-evidence-context-enrichment.md
 ├── scripts/
 │   ├── test-agent-infra.sh
 │   └── validate-agent-infra.sh
@@ -160,7 +166,8 @@ The repository currently contains Agent-development governance, the evidence/con
     │   ├── durable-learning-history-phase-3.md
     │   ├── explicit-pi-session-review-phase-1.md
     │   ├── explicit-pi-session-review-phase-2.md
-    │   └── explicit-pi-session-review-phase-3.md
+    │   ├── explicit-pi-session-review-phase-3.md
+    │   └── go-evidence-context-enrichment-phase-1.md
     └── decisions/
         ├── README.md
         ├── ADR-0001-agent-development-lifecycle.md
@@ -168,7 +175,8 @@ The repository currently contains Agent-development governance, the evidence/con
         ├── ADR-0003-post-preview-evaluator-boundary.md
         ├── ADR-0004-answer-assessment-lifecycle.md
         ├── ADR-0005-local-learning-history.md
-        └── ADR-0006-explicit-pi-session-provenance.md
+        ├── ADR-0006-explicit-pi-session-provenance.md
+        └── ADR-0007-snapshot-consistent-go-context-evidence.md
 ```
 
 There are currently two released production prompts, narrow production Pi RPC adapters for question generation and answer assessment, deterministic fixtures for both evaluator seams, and a daemon-connected SQLite history module with a manually triggered repository query UI, but no package publication or CI configuration. The repository has a public README and an installable local Pi package manifest. The package has one Pi-provided peer dependency and three exact development dependencies; it has no third-party runtime npm dependency. Source-bearing assessment state remains volatile while the allowlisted learning outcome is durable and locally queryable when storage is available.
@@ -178,6 +186,7 @@ There are currently two released production prompts, narrow production Pi RPC ad
 The implemented core modules and adapters are:
 
 - `internal/evidence`: one deep module whose narrow `ResolveRepositoryRoot` interface verifies and canonicalizes a Git working-tree root for preview and history lookup. Its `Preview` interface resolves explicit Git selections, parses zero-context diffs, maps changed lines to Go declarations, applies and retains caller-provided evidence limits, and returns stable errors plus explicit omission/truncation metadata. Its pure `BuildBundle` interface accepts only that bounded result and produces deterministic `E001`-style citations, content hashes, exact byte counts, copied coverage metadata, and a content-addressed manifest without reading more source or exposing the absolute repository root. Tests exercise both the in-memory seam and real temporary Git repositories rather than an invented Git port.
+- `internal/evidence` also owns an opt-in internal Go-context mode behind the same `Preview` seam. Private commit and working-tree snapshots feed one in-memory `go/build`/`go/types` analyzer with bounded selected-snapshot module/workspace data parsed by `x/mod/modfile`; only changed packages and direct repository-local imports are considered. It emits deterministic changed-import/context-declaration items, syntactic/type-checked relations, fixed build/limit metadata, and closed partial/unavailable reasons. It invokes no Go package driver, reads no vendor/module-cache/GOROOT/external source, follows no outside-root configuration or symlink, and writes no source copy or cache. Context-mode Git reads disable promised-object lazy fetch, terminal prompting, and optional locks without changing the context-disabled v1 path. Current daemon callers do not enable it, and `BuildBundle` rejects enriched results until the Phase 2 v2 contracts exist.
 - `internal/evaluator`: a provider-independent boundary. `NewInput` validates a complete `evidence.Bundle` and owns a JSON-safe copy without a repository root; `ParseQuestionSet` accepts only one bounded strict JSON object with fixed Q1/Q2/Q3 kinds and valid bundle references; `QuestionEvaluator` accepts only that input plus validated non-secret model metadata. `PiRPCEvaluator` freezes a symlink-resolved `pi` path after an exact startup version preflight, starts one isolated process without a shell, disables retries/compaction and every discovered capability, sends one LF-framed input, waits for `agent_settled`, validates one final assistant text, applies fixed stream/deadline bounds, and always terminates/reaps the child. The assessment side owns validated evidence, questions, exactly three bounded answers, and at most one F1 exchange through `AssessmentInput`; `ParseAssessmentTurn` permits exactly one initial follow-up or three ordered verdicts and validates every reference; `DeriveAssessmentLabel` maps verdicts deterministically. `PiRPCAssessmentEvaluator` implements the separate narrow assessment seam while reusing only the package-private RPC lifecycle; every initial or F1 turn gets a new terminated and reaped process.
 - `internal/assessment`: the answer-lifecycle module. `Start`, `Submit`, and `Close` own validated evaluator values, a fixed model selection, server-owned repository/prompt provenance plus an optional bounded Session ID, cryptographic instance-local capabilities, 30-minute expiry, eight-entry/1-MiB capacity, atomic initial/F1 transitions, safe history lifecycle writes, failure invalidation, cleanup, and deterministic label derivation. Session provenance bypasses evaluator values and is used only by the dedicated history start. Source-bearing values remain volatile; the client cannot supply repository, evidence, questions, model, prompt, credential, or executable provenance.
 - `internal/history`: a deep SQLite module. `Open`, `Create`, `CreateWithPiSession`, `MarkFollowUp`, `Complete`, `Fail`, `List`, `ReviewedPiSessionIDs`, and `Close` hide protected path creation, same-owner/mode/symlink/hard-link/local-filesystem checks, one verified connection, ordered forward-only embedded schema migration, exact schema and stored-value validation, immediate transactions, idempotent terminal writes, repository-scoped bounded reads, completion-only Pi Session lookup, and startup conversion of `running` rows to `interrupted`. Schema v2 adds exactly one nullable 1–128-byte source-free `pi_session_id`; v1 rows and current Git-only starts store SQL `NULL`. Generic `Start`, `Record`, and `List` remain Session-free. No Session path, cwd, name, time, message count, parent, leaf, prompt, answer, tool call/result, summary, transcript, source, changed path, question/answer/F1/feedback text, prompt body, RPC/model output, credential, token, or executable path has an API or column. The daemon constructs, queries, and closes the store as a degradable capability and exposes the Session-specific seams only through independent authenticated routes.
@@ -191,7 +200,7 @@ The remaining target architecture identifies these unimplemented responsibilitie
 
 - Later Pi extension behavior: richer answer editing beyond the implemented Git/Session selection and string-input flow.
 - Later daemon capabilities: SSE event delivery, durable worker coordination, and learning lifecycle management beyond the implemented evidence-preview request.
-- Go evidence enrichment: type/dependency analysis and any expansion beyond the bytes represented in the current preview. The syntax-level evaluator-ready bundle is product-connected, but evidence expansion remains out of scope.
+- Go evidence enrichment: additive authenticated preview routes, v2 bundles/evaluator inputs/prompts, exact continuation accounting, and visible Pi extension confirmation for the now-verified internal context result. The current syntax-level evaluator-ready bundle remains the only product-connected path.
 
 ADR-0005 fixes production history at `os.UserConfigDir()/pi-learnloop/data/history.db`. `daemon.Config.DataDir` accepts an explicit absolute path for integration tests only; there is no environment variable or client-supplied database path.
 
@@ -271,7 +280,8 @@ Current runtime dependencies:
 - the local `git` executable;
 - the local `pi` executable at exactly version `0.84.3`, resolved from the daemon startup `PATH`; Pi owns model selection and credentials;
 - Go 1.21 or a compatible newer Go toolchain;
-- `modernc.org/sqlite v1.35.0` and the exact indirect module graph recorded in `go.sum`; this is the only third-party Go runtime dependency and does not require CGO;
+- direct `golang.org/x/mod v0.19.0`, used only for in-memory `go.mod`/`go.work` parsing and module/import path validation by the internal context analyzer; it preserves the Go 1.21 baseline and introduced no selected-version or `go.sum` change;
+- direct `modernc.org/sqlite v1.35.0` and the exact indirect module graph recorded in `go.sum`; the driver does not require CGO;
 - Node.js `>=22.19.0` and Pi 0.84.x for the extension;
 - Pi-provided peer `@earendil-works/pi-coding-agent: "*"`, which is not bundled.
 
@@ -282,10 +292,6 @@ Exact extension development dependencies:
 - `typescript@5.9.3` (Apache-2.0).
 
 The extension uses Node's built-in test runner and built-in filesystem and HTTP modules. There is no third-party runtime npm dependency.
-
-Planned integration:
-
-- Go analysis packages required by a separately approved evidence-enrichment implementation.
 
 Any additional SQLite, migration-framework, ORM, or Go-analysis dependency remains `TODO / Need Confirmation` until introduced through a separately approved plan.
 
@@ -315,6 +321,7 @@ Any additional SQLite, migration-framework, ORM, or Go-analysis dependency remai
 - Treat ADR-0003's runtime evaluator schemas, released prompt version, exact Pi 0.84.3 support, fixed question order, and deny-argument contract as compatibility-sensitive.
 - Treat ADR-0004's assessment schemas, exact Q1/Q2/Q3 answer order, single-F1 limit, verdict set, text bounds, and deterministic label mapping as compatibility-sensitive.
 - Treat ADR-0005's `lr1-` record IDs, status/failure/label/verdict enums, protection requirements, and no-repair/no-downgrade policy, plus ADR-0006's schema v2 nullable Pi Session ID, 1–128-byte ASCII contract, completion-only reviewed meaning, v1 migration, and old-binary fail-closed behavior, as compatibility-sensitive.
+- Treat ADR-0007's snapshot consistency, local-only source policy, build configuration, closed context item/relation/omission vocabularies, and fixed input/output limits as compatibility-sensitive before exposing the enriched path.
 - Do not change command behavior, assessment labels, configuration defaults, or evidence-sharing behavior silently.
 - macOS ARM64 and AMD64 are the only initial compatibility targets.
 - Linux, Windows, multi-language analysis, and team use are future possibilities, not current compatibility promises.
@@ -360,6 +367,15 @@ The Agent validator checks four synthetic evaluator failure categories, released
 
 Current Go evidence tests cover commit ranges, working-tree and untracked files, declaration kinds and method identity, rename/deletion outcomes, non-Go changes, malformed source, repository escape protection, stable error codes, deterministic evidence limits, exact Preview-to-Bundle projection, citation ordering, test classification, canonical manifest hashing, privacy-safe path handling, and fail-closed budget/structure/insufficiency behavior. Evaluator contract and fake-process tests cover bundle integrity and copy ownership, strict JSON and duplicate-key rejection, fixed question shape and references, insufficient evidence, assessment initial/follow-up invariants, answer and feedback bounds, one-follow-up enforcement, exact reference validation, all 27 verdict-to-label combinations, deterministic assessment behavior, exact Pi argument/model mapping, executable resolution/version preflight, LF framing, response correlation, `agent_settled`, documented streaming events, Unicode separators, discovered commands, tool events, missing model/auth behavior, timeout, cancellation, stdout/stderr caps, invalid output, child exit, and process reaping without a provider call.
 
+Internal Go-context evidence tests additionally cover commit/working-tree parity,
+historical head isolation, additions/deletions, import-only evidence, direct local
+references and implementations, nested modules, workspace and replacement
+precedence, build constraints, test variants, CGO/external/malformed/cyclic
+partial states, newer/unsupported layouts, outside configuration and symlinks,
+vendor exclusion, cancellation, deterministic ordering, and every fixed budget
+class. The v1 result is compared unchanged and rejects enriched input at its
+bundle boundary.
+
 Current daemon integration tests cover loopback discovery, preflight-before-discovery publication, commit-range and working-tree previews through real Git repositories, fixed evidence caps, token authentication, Host/Origin/CORS defenses, strict JSON, size and media-type limits, stable safe errors, single-instance locking, runtime permissions, symlink rejection, token rotation, stale-state replacement, cancellation propagation, shutdown cleanup, and a production-composed repository-history query that starts no evaluator. History route tests cover canonical nested paths, cross-repository isolation, newest-first source-free response shape, the 50-record cap, exact JSON, authentication, body/media limits, empty results, invalid repositories, and unavailable storage. Continuation tests cover exact retained working-tree evidence after the source is changed, five-minute expiry, count/byte capacity, owned copies, single and concurrent consume, strict question requests, protected routing, empty evidence, and restart loss. Daemon tests install a fake Pi executable and never call a provider. Command tests verify that no unsupported security-weakening arguments are accepted.
 
 Assessment service and route tests cover owned copies, thirty-minute expiry, count/byte capacity without live eviction, cleanup, strict stage fields, malformed and replayed IDs, invalid submissions without state mutation, atomic concurrent consume, evaluator failure invalidation, one F1, final label mapping, running-before-evaluator ordering, one-record F1 completion, safe failure codes, cancellation, terminal storage failure, response loss, server-owned prompt/schema/model provenance, excluded-content absence, and the absence of a production deterministic fallback. Assessment fake-Pi tests additionally cover exact initial/follow-up inputs, a fresh process per turn, response correlation, strict schema/reference failures, isolation-event rejection, timeout, cancellation, stream/output caps, early exit, opaque errors, and process reaping; daemon integration verifies production composition without a provider.
@@ -394,5 +410,5 @@ The remaining target strategy includes:
 - History databases intentionally have no automatic retention or repair. The source-free metadata can grow until a separately approved deletion/pruning design exists, and any future backup must account for WAL state.
 - `modernc.org/sqlite v1.35.0` is intentionally pinned to the accepted Go 1.21-compatible dependency graph. Driver upgrades require a separate compatibility and migration review.
 - A durable SQLite worker queue can become unnecessary complexity if the state machine is not kept small.
-- Syntax parsing does not yet provide type or dependency information, and deletion-only hunks are reported explicitly rather than reconstructed from the base-side declaration.
+- The product-connected v1 path is still syntax-only. The internal type/dependency context proof is not model-visible until separately authorized Phase 2/3 routes, contracts, prompts, and preview UI exist; deletion-only hunks remain explicitly reported rather than reconstructed from base-side source.
 - On this macOS 26 development machine, the default Homebrew Go 1.21.13 external linker aborts network-enabled test binaries with `missing LC_UUID`; Go 1.21 passes with `CGO_ENABLED=0` or `-tags netgo`, and the unmodified test, race, vet, and build commands pass with the already-installed Go 1.26.4 toolchain. The module language version remains Go 1.21.

@@ -125,6 +125,9 @@ type bundleManifestItem struct {
 }
 
 func BuildBundle(result Result) (Bundle, error) {
+	if result.GoContext != nil {
+		return Bundle{}, invalidBundleResult("Go context requires evidence bundle v2")
+	}
 	if err := validateBundleResultStructure(result); err != nil {
 		return Bundle{}, err
 	}

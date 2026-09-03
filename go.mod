@@ -2,7 +2,10 @@ module github.com/reeezark/pi-learnloop
 
 go 1.21
 
-require modernc.org/sqlite v1.35.0
+require (
+	golang.org/x/mod v0.19.0
+	modernc.org/sqlite v1.35.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
