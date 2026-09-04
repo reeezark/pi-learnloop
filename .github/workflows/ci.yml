@@ -37,7 +37,6 @@ jobs:
       GOWORK: "off"
       GOFLAGS: -mod=readonly
       GOEXPERIMENT: ""
-      NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache
       NPM_CONFIG_IGNORE_SCRIPTS: "true"
       EXPECTED_GO_ARCH: ${{ matrix.go-arch }}
       EXPECTED_NODE_ARCH: ${{ matrix.node-arch }}
@@ -76,12 +75,18 @@ jobs:
           scripts/test-agent-infra.sh
           scripts/validate-agent-infra.sh
       - name: Install exact locked development dependencies without lifecycle scripts
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Extension typecheck and provider-free tests
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache
         run: |
           npm run typecheck
           npm test
       - name: Assert exact extension-only package without creating a tarball
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache
         run: |
           node - <<'JS'
           const assert = require('node:assert/strict');

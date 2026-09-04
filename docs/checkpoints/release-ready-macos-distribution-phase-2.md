@@ -23,9 +23,12 @@ Phase 1 was committed/pushed to main as
 confirmed native ARM64/Intel runner availability and the narrowly scoped
 bootstrap plan/ADR amendment on 2026-09-04.
 
-Phase 2 is active/in-progress. Its implementation passed local verification and
-awaits the authorized initial commit/push; actual hosted CI and manual bootstrap have
-not run yet. Do not infer completion from implemented workflow files.
+Phase 2 is active/in-progress. The reviewed installation was committed/pushed as
+`2337f1b6dfb99d4b3c998760a19d4d6ea88f9bd4`
+(`ci: add read-only native macOS verification`). Its first hosted run failed
+GitHub's workflow-expression validation before any native job started. A scoped
+workflow fix is being verified for a follow-up installation commit. Manual
+bootstrap has not run. Do not infer completion from implemented workflow files.
 
 ## Completed
 
@@ -107,11 +110,28 @@ Passed so far:
 - Go 1.21.13 with `CGO_ENABLED=0 go test -count=1 ./...`: all seven packages pass.
 - Go 1.27.1 `go test -count=1 ./...`, `go test -race -count=1 ./...`,
   `go vet ./...`, and `CGO_ENABLED=0 go build` to a temporary output: all pass.
+- After installation commit `2337f1b`, the exact-commit release self-test passed
+  on the clean checkout. Both binaries record that complete SHA with
+  `vcs.modified=false`; repeat hashes are ARM64
+  `49ff47f19c2e47892bba08a3441ead24ae3994ff7100964b569474811c5e28d5`
+  and AMD64
+  `d3de4245c73595d8a22de3907a41a53d7ea899e1dfe5e045bc3ecde12a3cac13`.
+  ARM64 foreground smoke passed; these are unsigned local candidates only.
 
 Initial broad Go attempts inherited an unrelated local Go 1.26.4 `GOROOT`,
 causing compiler-version mismatch before tests. Successful reruns used
 `env -u GOROOT`, exact toolchain paths, isolated caches, and automatic switching
 disabled. This changes only test-process environment, not system configuration.
+
+Failed hosted verification:
+
+- <https://github.com/reeezark/pi-learnloop/actions/runs/33846093860> rejected
+  `runner.temp` in job-level `env` at CI line 40. No jobs/artifacts were created.
+  Generic YAML and shell parsing had passed but cannot validate GitHub context
+  availability. The fix moves only npm cache configuration to step-level `env`,
+  where `runner` is available; permissions and release authority are unchanged.
+- A focused regression check reproduced the invalid job context before the fix.
+  Re-run it and the workflow syntax/security checks before the follow-up push.
 
 No hosted CI/manual run, native Intel smoke, signed-tag, signing/notarization,
 or publication verification has yet passed. No live model was called.
@@ -126,13 +146,15 @@ or publication verification has yet passed. No live model was called.
   credentials or add a privileged workflow trigger as a workaround.
 - The first browser navigation timed out; recovery reached the public Actions
   page and confirmed the signed-out state. No account setting was changed.
+- The authenticated run query eventually returned; a public API fallback received
+  HTTP 403. The rendered GitHub run page supplied the exact validation diagnostic.
 - Exact release SemVer, protected-environment approver, trusted signer, Apple
   credentials, and npm ownership/trusted publisher remain Phase 3 prerequisites.
 
 ## Remaining Work
 
-Finish the full allowed-file diff review; commit/push
-the reviewed read-only implementation under the explicit bootstrap authorization.
+Verify/review and commit/push the scoped CI expression-context fix under the
+explicit bootstrap installation authorization.
 Obtain actual ordinary CI and manual-bootstrap native execution evidence at
 that exact SHA, including runner images/OS, binary provenance, run/job URLs,
 and zero uploaded artifacts. Failed or unavailable execution blocks completion.
