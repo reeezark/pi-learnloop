@@ -3,7 +3,7 @@ id: release-ready-macos-distribution
 status: active
 risk: high
 current_phase: 2
-phase_status: awaiting_approval
+phase_status: in_progress
 updated: 2026-09-04
 ---
 
@@ -235,6 +235,10 @@ Phase 2 may modify only:
 
 Phase 3 may modify only:
 
+- `.github/workflows/ci.yml` and `.github/workflows/release.yml` for the deferred
+  signed-tag, protected signing/notary, and publication gates
+- `scripts/build-release-artifacts.sh`, `scripts/verify-release-artifacts.sh`,
+  and `scripts/test-release-artifacts.sh` for signed-archive verification
 - `README.md`
 - `SECURITY.md`
 - `CONTRIBUTING.md`
@@ -378,10 +382,21 @@ declared at the narrowest scope: build/test jobs get read-only contents;
 publication alone may receive `contents: write`; npm publication alone receives
 `id-token: write`.
 
-The workflow may be installed in Phase 2 but must default to a non-publishing
-verification path. Stable publication, repository environment changes, npm
-trusted-publisher configuration, and release credentials are Phase 3 external
-mutations.
+On 2026-09-04 the user approved a narrowly isolated first-run exception: Phase 2
+may commit/push the reviewed read-only workflows to the default branch and run
+bootstrap verification of that exact 40-lowercase-hex commit. This is verification,
+not release preparation or signed-tag eligibility. The manual bootstrap requires
+`refs/heads/main` and an explicit commit equal to the dispatch event SHA; it
+cannot select arbitrary source, tags, or publication modes. It reuses the same
+read-only native suite as CI, with no secrets, environment, OIDC, write permission,
+cache upload, artifact upload, signing, or publication job. Ordinary push/PR CI
+checks the exact event SHA, including a PR merge ref, without privileged triggers.
+
+Successful signed-tag verification and implementation of protected signing/notary
+and OIDC publication jobs move to separately authorized Phase 3. Stable
+publication, repository environment changes, npm trusted-publisher configuration,
+and release credentials also remain Phase 3 external mutations. Every original
+publication trust gate remains mandatory; bootstrap success grants none of them.
 
 ### 8.5 Require Apple trust gates for stable daemon artifacts
 
@@ -577,22 +592,46 @@ remain Phase 2 work. No commit, push, tag, signing, or publication was performed
 - Update `PROJECT.md`, record a current Phase 1 checkpoint, advance the plan to
   Phase 2 `awaiting_approval`, and stop.
 
-### Phase 2: Native CI and signing-ready release workflow
+### Phase 2: Native CI and read-only bootstrap verification
 
 Prerequisite: Phase 1 is committed, the runner/account prerequisites below are
 confirmed, and the user explicitly authorizes Phase 2.
 
+The user authorized Phase 2 and the Phase 1 commit/push on 2026-09-04.
+Phase 1 is now committed and pushed to `origin/main` as
+`d93dfa5805a7cc172ba2caecfc16d2356422a16c`. The user then confirmed native
+ARM64/Intel runner availability and approved the plan/ADR bootstrap amendment
+on 2026-09-04. The earlier prerequisite pause is resolved; actual successful
+hosted execution is still required, not inferred from that confirmation.
+
+The remote has no tags. The approved sequencing installs a reviewed, read-only,
+no-upload workflow first, then verifies its exact commit on both native runners.
+Successful signed-tag verification and privileged workflow implementation move
+to Phase 3, where tag creation can be separately authorized. GitHub requires a
+manually dispatched workflow to exist on the default branch.
+See <https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow>.
+The current recovery record is
+`docs/checkpoints/release-ready-macos-distribution-phase-2.md`. No tag, approval
+rule, credential, or publication authority is created by this exception.
+
 - Add ordinary least-privilege CI for exact Go/Node toolchains, Go/extension/
   governance suites, npm allowlist, and release-script tests.
-- Add a manually dispatched, default-non-publishing release workflow that accepts
-  only an existing matching signed tag and repeats all verification.
+- Add a manually dispatched bootstrap workflow that accepts only the exact
+  reviewed commit at the dispatched main ref and repeats the same verification.
 - Pin every action to a reviewed full commit SHA and disable dependency caching
-  for privileged release work.
+  and persisted checkout credentials for all jobs. Pin Node 22.19.0, source
+  compatibility Go 1.21.13, and release Go 1.27.1; verify actual versions and
+  native architecture. Keep all manifests unchanged.
+- Extend the existing release self-test with native foreground-daemon smoke and
+  an optional explicit expected commit argument. With that argument, reject a
+  dirty checkout or wrong HEAD and require both binaries' embedded revision to
+  match with `vcs.modified=false`. Default local tests still permit dirty
+  unsigned candidates. No artifact builder/verifier interface change is needed.
 - Run command/daemon smoke tests natively on explicit ARM64 and Intel macOS
   runners; record the actual images/OS versions as release evidence.
-- Add protected signing/notary and npm OIDC jobs that cannot receive authority
-  from pull requests or arbitrary branch refs and cannot publish when any trust
-  gate is absent.
+- Add no signing/notary, environment, OIDC, cache/artifact upload, or publication
+  job, including disabled privileged jobs. Missing runner or verification is a
+  failed bootstrap, not grounds for a cross-compiled fallback.
 - Validate workflow syntax and non-publishing execution without creating a Git
   tag, GitHub Release, npm version, or public artifact.
 - Update `PROJECT.md`, record a current Phase 2 checkpoint, advance the plan to
@@ -604,6 +643,10 @@ Prerequisite: Phase 2 is committed, all external prerequisites are confirmed,
 the exact release version is chosen, and the user explicitly authorizes Phase 3
 including the named external GitHub/npm mutations.
 
+- Implement and verify the deferred signed-tag eligibility, protected
+  signing/notary, OIDC, and controlled publication jobs. The read-only bootstrap
+  is never a substitute for those gates. Re-review action pins and workflow trust
+  boundaries before introducing any privileged job.
 - Add public installation, verification, upgrade, rollback, uninstall, support,
   security-reporting, contribution, and changelog documentation.
 - Update only the authorized root package version/metadata and matching lockfile
@@ -643,9 +686,11 @@ including the named external GitHub/npm mutations.
 7. Native macOS ARM64 and Intel jobs each execute focused command and foreground
    daemon smoke tests; cross-compilation alone cannot satisfy this criterion.
 8. Ordinary CI has read-only permissions and no Apple/npm release authority.
-9. Release work starts only from a matching clean signed tag, defaults to
-   non-publishing, uses reviewed full-SHA action pins, and requires a protected
+9. Release preparation/publication starts only from a matching clean signed tag,
+   defaults to non-publishing, uses reviewed full-SHA action pins, and requires a protected
    environment before privileged jobs.
+   Phase 2's explicitly approved reviewed-commit bootstrap is read-only, has no
+   upload or publication capability, and cannot establish release eligibility.
 10. Stable daemon binaries have valid Developer ID Application signatures,
     hardened runtime, secure timestamps, accepted Apple notarization, successful
     post-download Gatekeeper assessment, and published final SHA-256 values.
@@ -712,18 +757,24 @@ including the named external GitHub/npm mutations.
 - Inspect every workflow trigger, job dependency, `if` expression, environment,
   permission, shell interpolation, and full-SHA action pin; no untrusted PR value
   may reach a privileged shell or environment.
-- Run ordinary CI from a pull-request-equivalent ref and prove no secret,
+- Run the shared ordinary push/PR suite on the exact reviewed event commit;
+  inspect its PR merge-ref checkout and prove no secret,
   `id-token: write`, `contents: write`, upload, tag, or publication path is
   reachable.
-- Run the release workflow in its explicit non-publishing mode against a test
-  signed tag/ref; require all Go, extension, governance, package, artifact, and
-  native ARM64/Intel smoke jobs to pass.
+- Commit/push the reviewed read-only implementation as approved, then run the
+  manual bootstrap for that exact main commit; require all Go, extension,
+  governance, package, artifact, and native ARM64/Intel smoke jobs to pass.
+  Record run/job URLs, actual architecture/OS/image, revision, and absence of
+  uploaded artifacts. A local or cross-compiled test is not hosted success.
 - On each native runner, run `pi-learnloop version`, start the foreground daemon
   with the fake Pi evaluator, validate the protected descriptor/status path, send
   SIGTERM, and confirm cleanup without a live provider call.
-- Prove a branch, lightweight/unsigned tag, mismatched package version, dirty
-  build metadata, missing runner, absent environment approval, or missing signing
-  prerequisite cannot reach publication.
+- Verify bootstrap rejects non-main refs, malformed/mismatched commit inputs,
+  dirty source/build provenance, and failed/missing native jobs. Review the
+  unreachable publication boundary: no Phase 2 job has its permission or code.
+  Exercise the bootstrap input gate locally with synthetic invalid event values
+  and run the actual default non-publishing path on GitHub. Successful signed-tag
+  and missing-signing/environment rejection tests belong to Phase 3.
 - Run both Agent-infrastructure scripts and the full Git end review.
 
 ### Phase 3 verification
@@ -751,10 +802,14 @@ including the named external GitHub/npm mutations.
 
 ## 14. Open Questions
 
-- `TODO / Need Confirmation`: Is `github.com/reeezark/pi-learnloop` public and
-  eligible for the intended hosted ARM64/Intel runners and npm provenance? The
-  repository manifest names it, but local files cannot prove remote visibility
-  or account billing/runner policy.
+- Confirmed on 2026-09-04: <https://github.com/reeezark/pi-learnloop> is visibly
+  public when viewed without signing in. The public Actions page has no workflow
+  execution evidence. Public visibility alone does not prove authenticated
+  Actions policy, account eligibility, or npm trusted-publisher configuration.
+- Confirmed on 2026-09-04: the user approved the read-only reviewed-commit
+  bootstrap and initial workflow commit/push/run sequence. Successful signed-tag
+  verification and privileged jobs are deferred to Phase 3 without weakening
+  release trust. Native hosted execution remains an evidence gate.
 - `TODO / Need Confirmation`: Is the unscoped npm name `pi-learnloop` owned and
   available to this maintainer, and can its trusted-publisher record be bound to
   the exact GitHub repository/workflow/environment? Do not publish or fall back
@@ -768,9 +823,9 @@ including the named external GitHub/npm mutations.
   directory and matched go.dev's SHA-256
   `ee215d57e0ec269c60cc9ceca68e6bda321ba9ee5afe24f4b0988703c2d87d12`
   and 68,100,347-byte size. This does not change the Go 1.21 module baseline.
-- `TODO / Need Confirmation`: Are `macos-15` and `macos-15-intel` enabled and
-  affordable for this repository when Phase 2 starts? If either is unavailable,
-  stop and amend the design instead of claiming cross-compiled verification.
+- Confirmed by the maintainer on 2026-09-04: `macos-15` and `macos-15-intel`
+  may be used for Phase 2. If execution shows either unavailable, stop instead
+  of claiming cross-compiled verification.
 - `TODO / Need Confirmation`: What exact first public SemVer is authorized? The
   manifest currently says `0.1.0`, but that is repository state, not permission
   to create `v0.1.0` or publish it.

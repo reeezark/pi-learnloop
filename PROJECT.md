@@ -13,6 +13,15 @@ verified, but only ARM64 is executed locally. Native Intel CI, signing,
 notarization, public installation documentation, and publication remain gated
 future phases; no stable binary release exists yet.
 
+Release-distribution Phase 2 now contains read-only push/PR CI and a manual
+reviewed-commit bootstrap that reuses the same native ARM64/Intel suite. Its
+workflow installation and hosted verification are in progress, not yet evidence
+of native Intel success. The workflow pins Go 1.21.13, Go 1.27.1, Node 22.19.0,
+and reviewed full-commit actions; checkout credentials are not persisted, caches
+are not uploaded, and no artifact upload, environment, signing, OIDC, or
+publication job exists. ADR-0009's accepted bootstrap exception defers successful
+signed-tag verification and privileged jobs to separately authorized Phase 3.
+
 # Project Goals
 
 - Let the user manually select unreviewed Pi Sessions or Git changesets with `/learn`.
@@ -430,11 +439,18 @@ scripts/verify-release-artifacts.sh 0.1.0 <artifact-directory>
 The output directory must be absent or empty, outside the checkout, with an
 existing parent. Each ZIP contains only `pi-learnloop` (0755), `LICENSE` (0644),
 and the fixed unsigned-candidate `README.md` (0644); `SHA256SUMS` covers the two
-ZIPs. Self-tests compare repeated unsigned binary hashes, execute only the
-native diagnostic, and exercise invalid versions/toolchains, output refusal,
+ZIPs. Self-tests compare repeated unsigned binary hashes, execute only the native
+diagnostic and foreground daemon, and exercise invalid versions/toolchains,
+output refusal,
 interruption/partial cleanup, corrupted contents/permissions/checksums, and
-invalid or mixed build provenance. No live model is involved. ZIP bytes are not
-claimed reproducible, and native AMD64 execution remains a Phase 2 gate.
+invalid or mixed build provenance. Native smoke uses a child-only fresh temporary
+home and a fake Pi that accepts exactly two version preflights; it verifies
+protected discovery, status/authentication, and SIGTERM cleanup. It never calls a
+provider or accesses real user state. Passing an optional exact 40-hex commit to
+`scripts/test-release-artifacts.sh` additionally requires a matching clean
+checkout and identical clean embedded provenance in both binaries. Without that
+argument, local dirty unsigned candidates remain testable. ZIP bytes are not
+claimed reproducible, and native AMD64 execution remains a hosted Phase 2 gate.
 
 The Agent validator checks four synthetic evaluator failure categories, released prompt metadata and safety requirements, the deny-by-default capability policy, stable asset versions, and privacy-safe run provenance without calling a model.
 

@@ -1,0 +1,41 @@
+name: Read-only release bootstrap
+run-name: Read-only bootstrap for ${{ inputs.commit }}
+
+"on":
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Reviewed main commit (40 lowercase hex characters); verification only
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reviewed-commit:
+    name: Require explicitly reviewed main commit
+    runs-on: macos-15
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Reject other events, refs, and commit inputs before checking out code
+        shell: bash
+        env:
+          REQUESTED_COMMIT: ${{ inputs.commit }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/main ||
+                ! "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ || "$REQUESTED_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo 'Bootstrap requires an explicitly reviewed exact main commit; no release is authorized.' >&2
+            exit 1
+          fi
+          echo 'Reviewed-commit bootstrap only: no signing, upload, OIDC, or publication.'
+  verify:
+    name: Reuse read-only native verification
+    needs: reviewed-commit
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    # Same-commit reusable workflow; no inherited secrets or release environment.
+    # Privileged signed-tag publication requires separately authorized Phase 3 work.

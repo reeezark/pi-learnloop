@@ -2,6 +2,26 @@
 
 set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+node - "$script_dir/.." "$@" <<'JS'
+const {spawnSync} = require('node:child_process');
+const [root, ...args] = process.argv.slice(2);
+try {
+  if (args.length > 1 || (args.length && !/^[0-9a-f]{40}$/.test(args[0]))) throw new Error();
+  if (args.length) {
+    function git(parameters) {
+      const result = spawnSync('git', parameters, {cwd: root, encoding: 'utf8', timeout: 10000});
+      if (result.error || result.status !== 0) throw new Error();
+      return result.stdout;
+    }
+    if (git(['rev-parse', '--verify', 'HEAD']) !== args[0] + '\n' ||
+        git(['status', '--porcelain', '--untracked-files=all']) !== '') throw new Error();
+  }
+} catch {
+  console.error('release self-test: expected commit requires one 40-hex SHA and a matching clean checkout');
+  process.exitCode = 1;
+}
+JS
+expected_revision=${1-}
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/pi-learnloop-release-test.XXXXXX")
 cleanup() {
   case "$test_root" in
@@ -48,14 +68,14 @@ const [scripts, root, version] = process.argv.slice(2);
   console.log('ok - interrupted build cleans staging and publishes nothing');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 JS
-node - "$script_dir" "$test_root" "$version" <<'JS'
+node - "$script_dir" "$test_root" "$version" "$expected_revision" <<'JS'
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
-const [scripts, root, version] = process.argv.slice(2);
+const [scripts, root, version, expectedRevision] = process.argv.slice(2);
 const build = path.join(scripts, 'build-release-artifacts.sh');
 const verify = path.join(scripts, 'verify-release-artifacts.sh');
 const first = path.join(root, 'first');
@@ -105,8 +125,27 @@ pass(build, [version, second]);
 pass(verify, [version, second]);
 for (const arch of ['arm64', 'amd64']) {
   assert.equal(hash(binary(first, arch)), hash(binary(second, arch)), `${arch} unsigned bytes differ`);
+  if (expectedRevision) {
+    const inspected = path.join(root, `provenance-${arch}`);
+    fs.writeFileSync(inspected, binary(first, arch), {mode: 0o600});
+    const info = JSON.parse(pass('go', ['version', '-m', '-json', inspected]));
+    const settings = Object.fromEntries(info.Settings.map(s => [s.Key, s.Value]));
+    assert.equal(settings['vcs.revision'], expectedRevision, 'binary differs from reviewed commit');
+    assert.equal(settings['vcs.modified'], 'false', 'binary contains dirty source provenance');
+  }
   console.log(`ok - repeat-built darwin/${arch} SHA-256 ${hash(binary(first, arch))}`);
 }
+const invalidCommits = [[''], ['main'], ['z'.repeat(40)], ['0'.repeat(40)], ['0'.repeat(40), 'extra']];
+if (pass('git', ['status', '--porcelain'], {cwd: path.join(scripts, '..')}))
+  invalidCommits.push([pass('git', ['rev-parse', 'HEAD'], {cwd: path.join(scripts, '..')}).trim()]);
+for (const args of invalidCommits) {
+  const invalid = run(path.join(scripts, 'test-release-artifacts.sh'), args);
+  assert.equal(invalid.error, undefined);
+  assert.equal(invalid.status, 1, 'invalid expected-commit invocation must fail before building');
+  assert.equal(invalid.stdout, '');
+  assert.match(invalid.stderr, /^release self-test: expected commit/);
+}
+console.log('ok - invalid or mismatched expected commit refused before building');
 const nativeArch = process.arch === 'arm64' ? 'arm64' : 'amd64';
 const native = path.join(root, 'native');
 fs.writeFileSync(native, binary(first, nativeArch), {mode: 0o755});
@@ -200,5 +239,111 @@ for (const [label, flags] of [
   ['absent trimpath metadata', ['-buildvcs=true', `-ldflags=-X main.version=${version}`]],
 ]) alteredArchive(label, work => pass('go', ['build', '-mod=readonly', ...flags, '-o', path.join(work, 'pi-learnloop'), './cmd/pi-learnloop'],
   {cwd: path.join(scripts, '..'), env: buildEnv}));
-console.log('Release artifact self-tests passed.');
 JS
+node - "$test_root" <<'JS'
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const {spawn} = require('node:child_process');
+const [root] = process.argv.slice(2);
+const fixtureHome = path.join(root, 'smoke-home');
+const fakeTools = path.join(root, 'smoke-tools');
+const calls = path.join(root, 'smoke-pi-calls');
+fs.mkdirSync(fixtureHome, {mode: 0o700});
+fs.mkdirSync(fakeTools, {mode: 0o700});
+fs.writeFileSync(path.join(fakeTools, 'pi'), '#!/bin/sh\n' +
+  'if [ "$#" = 1 ] && [ "$1" = --version ]; then\n' +
+  '  printf "version\\n" >> "$PI_LEARNLOOP_TEST_CALLS"\n  printf "0.84.3\\n"\n  exit 0\nfi\n' +
+  'printf "unexpected\\n" >> "$PI_LEARNLOOP_TEST_CALLS"\nexit 1\n', {mode: 0o755});
+// Only the child uses a fresh HOME. No real Pi, credential, or user state is reachable.
+const child = spawn(path.join(root, 'native'), ['daemon'], {cwd: fixtureHome,
+  env: {HOME: fixtureHome, PATH: fakeTools + ':/usr/bin:/bin', PI_LEARNLOOP_TEST_CALLS: calls},
+  stdio: ['ignore', 'pipe', 'pipe']});
+let closed = false, interrupted = false, outputBytes = 0, startFailed = false;
+const finished = new Promise(resolve => child.once('close', (code, signal) => {
+  closed = true;
+  resolve({code, signal});
+}));
+child.once('error', () => { startFailed = true; });
+for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => {
+  outputBytes += bytes.length;
+  if (outputBytes > 16384) child.kill('SIGKILL');
+});
+const killTimer = setTimeout(() => { child.kill('SIGKILL'); }, 20000);
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => {
+  interrupted = true;
+  child.kill('SIGTERM');
+});
+function protectedPath(file, directory) {
+  const stat = fs.lstatSync(file);
+  assert.ok(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()));
+  assert.equal(stat.mode & 0o777, directory ? 0o700 : 0o600);
+  assert.equal(stat.uid, process.geteuid());
+  if (!directory) assert.equal(stat.nlink, 1);
+}
+function request(base, route, method = 'GET', headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(new URL(route, base), {method, headers, agent: false}, res => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => {
+        body += chunk;
+        if (Buffer.byteLength(body) > 16384) req.destroy(new Error('smoke response exceeds bound'));
+      });
+      res.on('error', () => reject(new Error('smoke response failed')));
+      res.on('end', () => resolve({status: res.statusCode, headers: res.headers, body}));
+    });
+    req.setTimeout(2000, () => req.destroy(new Error('smoke request timed out')));
+    req.on('error', () => reject(new Error('smoke request failed')));
+    req.end();
+  });
+}
+(async () => {
+  try {
+    const state = path.join(fixtureHome, 'Library', 'Application Support', 'pi-learnloop', 'runtime');
+    const descriptorFile = path.join(state, 'daemon.json');
+    for (let i = 0; i < 200 && !fs.existsSync(descriptorFile) && !closed; i++)
+      await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(!startFailed && !closed && !interrupted, 'foreground daemon did not remain running');
+    protectedPath(state, true);
+    for (const name of ['daemon.json', 'daemon.token', 'daemon.lock']) protectedPath(path.join(state, name), false);
+    const descriptor = JSON.parse(fs.readFileSync(descriptorFile, 'utf8'));
+    assert.deepEqual(Object.keys(descriptor).sort(),
+      ['schema_version', 'protocol_version', 'instance_id', 'pid', 'base_url', 'started_at'].sort());
+    assert.equal(descriptor.schema_version, 1);
+    assert.equal(descriptor.protocol_version, 1);
+    assert.equal(descriptor.pid, child.pid);
+    assert.match(descriptor.instance_id, /^[A-Za-z0-9_-]{22}$/);
+    assert.match(descriptor.started_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+    assert.match(descriptor.base_url, /^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/);
+    const token = fs.readFileSync(path.join(state, 'daemon.token'), 'utf8');
+    assert.ok(/^[A-Za-z0-9_-]{43}$/.test(token), 'invalid protected token');
+    const status = await request(descriptor.base_url, '/v1/status');
+    assert.equal(status.status, 200);
+    assert.equal(status.headers['cache-control'], 'no-store');
+    assert.equal(status.headers['access-control-allow-origin'], undefined);
+    assert.deepEqual(JSON.parse(status.body), {protocol_version: 1, instance_id: descriptor.instance_id, status: 'ready'});
+    assert.equal((await request(descriptor.base_url, '/v1/evidence-previews', 'POST')).status, 401);
+    assert.equal((await request(descriptor.base_url, '/v1/status', 'GET', {Origin: 'https://example.invalid'})).status, 403);
+    // Authentication succeeds, but an empty JSON request is still rejected before evaluation.
+    assert.equal((await request(descriptor.base_url, '/v1/evidence-previews', 'POST',
+      {Authorization: 'PiLearnLoop ' + token, 'Content-Type': 'application/json'})).status, 400);
+    assert.equal(fs.readFileSync(calls, 'utf8'), 'version\nversion\n', 'only two Pi version preflights are allowed');
+    child.kill('SIGTERM');
+    const result = await finished;
+    assert.deepEqual(result, {code: 0, signal: null});
+    assert.ok(!interrupted, 'smoke test interrupted');
+    assert.equal(outputBytes, 0, 'daemon unexpectedly emitted output');
+    assert.ok(!fs.existsSync(descriptorFile) && !fs.existsSync(path.join(state, 'daemon.token')), 'runtime cleanup failed');
+    assert.equal(fs.readFileSync(calls, 'utf8'), 'version\nversion\n');
+    console.log(`ok - native ${process.arch} foreground daemon, protected discovery/auth/status, fake Pi, SIGTERM cleanup`);
+  } finally {
+    if (!closed) child.kill('SIGKILL');
+    await finished;
+    clearTimeout(killTimer);
+  }
+})().catch(() => { console.error('release smoke: foreground verification failed'); process.exitCode = 1; });
+JS
+echo 'Release artifact self-tests passed.'

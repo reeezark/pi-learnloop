@@ -157,6 +157,23 @@ Workflow actions are pinned to reviewed full commit SHAs. Build/test jobs receiv
 only read access. GitHub Release publication alone may receive `contents: write`;
 npm publication alone receives `id-token: write`.
 
+The user approved a first-run sequencing amendment on 2026-09-04. Before any
+release tag exists, Phase 2 may install the reviewed read-only workflows on the
+default branch and manually verify an explicitly reviewed 40-lowercase-hex
+commit. The bootstrap accepts only `refs/heads/main` with an input equal to the
+dispatch event SHA, checks clean source and both binaries' exact revision, and
+reuses ordinary native CI. It has no signing/notary job, secret/environment,
+OIDC, write permission, cache/artifact upload, or publication path. Checkout
+credentials are not persisted and dependency caching is disabled. This is not
+release preparation and establishes no signed-tag or publication eligibility.
+
+The amendment resolves GitHub's default-branch workflow prerequisite without
+creating a tag early or weakening any stable-release gate. Successful signed-tag
+verification and implementation of privileged jobs move to separately authorized
+Phase 3, together with the original external trust prerequisites. Actual native
+ARM64/Intel bootstrap runs must succeed before Phase 2 completes; unavailable
+runners or failed verification remain blockers.
+
 The extension is published through npm's trusted-publisher OIDC flow on a
 GitHub-hosted runner using an exact verified Node version satisfying
 `>=22.19.0` and an exact reviewed npm CLI version satisfying `>=11.5.1`.
@@ -257,6 +274,14 @@ Rejected. Signing, notarization, registry publication, and GitHub Release creati
 are non-atomic external mutations. Manual dispatch from an already reviewed
 signed tag plus protected-environment approval makes the exact source and intent
 observable before privileged work.
+
+### Create a tag early or give bootstrap dormant publication authority
+
+Rejected. The first workflow must reach the default branch before manual
+dispatch, but that does not justify creating an unauthorized tag or adding
+signing/OIDC/write permissions to verification. A separate read-only commit
+bootstrap resolves sequencing while preserving the complete signed-tag and
+protected-publication gates for the later phase.
 
 ## Implementation Status
 

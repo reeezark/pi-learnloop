@@ -1,0 +1,131 @@
+name: Read-only native CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native ${{ matrix.go-arch }} verification
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            go-arch: arm64
+            node-arch: arm64
+            machine: arm64
+          - runner: macos-15-intel
+            go-arch: amd64
+            node-arch: x64
+            machine: x86_64
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOENV: "off"
+      GOTOOLCHAIN: local
+      GOWORK: "off"
+      GOFLAGS: -mod=readonly
+      GOEXPERIMENT: ""
+      NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache
+      NPM_CONFIG_IGNORE_SCRIPTS: "true"
+      EXPECTED_GO_ARCH: ${{ matrix.go-arch }}
+      EXPECTED_NODE_ARCH: ${{ matrix.node-arch }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+    steps:
+      - name: Checkout exact event commit without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install exact Node without dependency caching or registry credentials
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.19.0
+          check-latest: false
+          package-manager-cache: false
+      - name: Verify native runner and clean event source
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const {execFileSync} = require('node:child_process');
+          assert.equal(process.version, 'v22.19.0');
+          assert.equal(process.arch, process.env.EXPECTED_NODE_ARCH);
+          assert.match(process.env.GITHUB_SHA, /^[0-9a-f]{40}$/);
+          assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'}), process.env.GITHUB_SHA + '\n');
+          assert.equal(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {encoding: 'utf8'}), '');
+          console.log(`Verified event commit ${process.env.GITHUB_SHA}; native ${process.arch}; Node ${process.version}`);
+          JS
+          sw_vers
+          printf 'Runner image: %s %s\n' "$ImageOS" "$ImageVersion"
+      - name: Governance verification
+        run: |
+          scripts/test-agent-infra.sh
+          scripts/validate-agent-infra.sh
+      - name: Install exact locked development dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Extension typecheck and provider-free tests
+        run: |
+          npm run typecheck
+          npm test
+      - name: Assert exact extension-only package without creating a tarball
+        run: |
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const {execFileSync} = require('node:child_process');
+          const pack = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], {encoding: 'utf8'}));
+          assert.equal(pack.length, 1);
+          assert.deepEqual(pack[0].files.map(file => file.path).sort(), [
+            'LICENSE', 'README.md', 'package.json', 'extensions/pi-learnloop.ts',
+            'extensions/lib/daemon-client.ts', 'extensions/lib/learn-command.ts',
+          ].sort());
+          assert.deepEqual(pack[0].bundled, []);
+          console.log('Verified exact six-entry extension-only npm package; nothing packed or published.');
+          JS
+      - name: Install exact source-compatibility Go without dependency caching
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.21.13
+          check-latest: false
+          cache: false
+      - name: Go 1.21 pure-Go source compatibility
+        run: |
+          test "$(go version)" = "go version go1.21.13 darwin/$EXPECTED_GO_ARCH"
+          CGO_ENABLED=0 go test -count=1 ./...
+      - name: Install exact release Go without dependency caching
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.1
+          check-latest: false
+          cache: false
+      - name: Release-toolchain test, race, vet, and pure-Go build
+        run: |
+          test "$(go version)" = "go version go1.27.1 darwin/$EXPECTED_GO_ARCH"
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+          go vet ./...
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/pi-learnloop-ci" ./cmd/pi-learnloop
+      - name: Artifact regressions and native foreground smoke at exact clean commit
+        run: scripts/test-release-artifacts.sh "$GITHUB_SHA"
+      - name: Confirm verification changed no tracked or untracked source
+        run: |
+          git diff --check
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const {execFileSync} = require('node:child_process');
+          assert.equal(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {encoding: 'utf8'}), '');
+          JS
+      # No upload/cache/publish step: candidates exist only on this disposable runner.

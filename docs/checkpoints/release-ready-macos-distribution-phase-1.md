@@ -2,7 +2,7 @@
 id: release-ready-macos-distribution-phase-1
 plan: release-ready-macos-distribution
 phase: 1
-status: current
+status: superseded
 updated: 2026-09-04
 ---
 
