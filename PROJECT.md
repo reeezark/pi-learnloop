@@ -4,6 +4,15 @@ Pi LearnLoop is a local learning companion for Go developers using the Pi coding
 
 Current repository status: Agent-development governance and the complete slices accepted in ADR-0003 through ADR-0008 are implemented. The daemon exposes separate strict authenticated Go-context preview routes for generic and explicit Pi Session selections, retains the exact bounded enriched result, and selects `evidence-bundle@2`, `evaluator-input@2`, `evaluator-assessment-input@2`, and immutable v2 prompts entirely from daemon-owned continuation state. Existing preview routes and their v1 bundles, inputs, prompts, outputs, and behavior remain unchanged. The updated Pi extension uses only the enriched routes for `/learn`, validates their exact closed response, visibly renders every changed/context evidence category, relationship, build value, fixed limit, completeness state, omission, hash, byte estimate, and truncation count, and names the active model plus evidence/input size bounds before confirmation. It never falls back to v1 when context is partial, unavailable, malformed, or served by an older daemon. The `pi-learnloop daemon` also serves strict authenticated question, assessment, repository-history, Session-bound preview, and completion-only Session-review requests. `/learn` supports direct Git selections plus a manual current-cwd Pi Session path that immediately projects the newest at most 20 results to unique bounded IDs, filters completed reviews once, and requires an explicit Git association; `/learn-history` retrieves the 20 newest source-free records for the current canonical repository without a model call. Question generation and each assessment turn use a fresh no-session, no-tools Pi 0.84.3 RPC process with schema-selected released embedded prompts and shared private isolation mechanics. The daemon owns the protected `internal/history` SQLite lifecycle. Schema v2 stores only a nullable bounded Pi Session ID; the dedicated daemon path keeps it outside evidence and model-visible values, propagates it to Session-aware history, and returns only completed candidate IDs for the canonical repository. The direct Git path stores SQL `NULL`. History still records only source-free running/F1/terminal facts, recovers unfinished rows as interrupted without an evaluator call, and reports save failure without hiding or retrying a successful assessment. Pi 0.84.3's accepted list-time privacy/resource limitation remains explicit: it materializes unused candidate messages and metadata in extension memory before LearnLoop can retain only IDs. Q1/Q2/Q3 now use Pi's bounded multiline editor behind a one-time external-editor disclosure and fixed ID-only review loop; F1 uses the same editor without adding another review selector. The assessment route alone accepts up to 32 KiB so every canonically encoded valid answer set fits, while all other route limits remain unchanged. SSE and durable worker coordination remain unimplemented.
 
+Release-distribution Phase 1 (ADR-0009) adds a local `pi-learnloop version`
+diagnostic and strict unsigned macOS artifact build/verification scripts. Direct
+builds report `dev`; candidates receive the package SemVer at link time. Exact
+Go 1.27.1 is a separate release toolchain; `go.mod` remains at Go 1.21 and the
+dependency graph is unchanged. Both architectures are cross-built and statically
+verified, but only ARM64 is executed locally. Native Intel CI, signing,
+notarization, public installation documentation, and publication remain gated
+future phases; no stable binary release exists yet.
+
 # Project Goals
 
 - Let the user manually select unreviewed Pi Sessions or Git changesets with `/learn`.
@@ -40,7 +49,7 @@ The Go module uses the standard library, the local `git` executable, direct `gol
 | Storage | Local SQLite in WAL mode | Protected schema-v2 history with nullable bounded Pi Session provenance, daemon assessment-lifecycle recording, bounded authenticated repository and completion-only Session queries, and manual generic-history UI rendering implemented |
 | Go analysis | `go/parser`, `go/build`, `go/types`, and `golang.org/x/mod/modfile` | `/learn` uses bounded selected-snapshot changed/import/type context through the additive v2 path; legacy daemon routes retain syntax-only v1 behavior; `go/packages` is intentionally not used |
 | Extension transport | Local HTTP plus later SSE on `127.0.0.1` | The daemon implements authenticated v1 and additive Go-context preview routes, Session review, single-use question, assessment, and bounded history operations; the extension uses the enriched routes and fails closed against old/malformed responses; SSE is not implemented |
-| Supported platform | macOS ARM64 and AMD64 | macOS ARM64 verified locally; AMD64 remains unverified |
+| Supported platform | macOS ARM64 and AMD64 | macOS ARM64 verified locally; both release architectures cross-build and pass static checks, but AMD64 native execution remains unverified |
 
 # Repository Structure
 
@@ -156,8 +165,12 @@ The repository currently contains Agent-development governance, the evidence/con
 │   ├── durable-learning-history.md
 │   ├── explicit-pi-session-review.md
 │   ├── go-evidence-context-enrichment.md
-│   └── reviewable-multiline-answers.md
+│   ├── reviewable-multiline-answers.md
+│   └── release-ready-macos-distribution.md
 ├── scripts/
+│   ├── build-release-artifacts.sh
+│   ├── verify-release-artifacts.sh
+│   ├── test-release-artifacts.sh
 │   ├── test-agent-infra.sh
 │   └── validate-agent-infra.sh
 └── docs/
@@ -184,7 +197,8 @@ The repository currently contains Agent-development governance, the evidence/con
     │   ├── go-evidence-context-enrichment-phase-2.md
     │   ├── go-evidence-context-enrichment-phase-3.md
     │   ├── reviewable-multiline-answers-phase-1.md
-    │   └── reviewable-multiline-answers-phase-2.md
+    │   ├── reviewable-multiline-answers-phase-2.md
+    │   └── release-ready-macos-distribution-phase-1.md
     └── decisions/
         ├── README.md
         ├── ADR-0001-agent-development-lifecycle.md
@@ -194,7 +208,8 @@ The repository currently contains Agent-development governance, the evidence/con
         ├── ADR-0005-local-learning-history.md
         ├── ADR-0006-explicit-pi-session-provenance.md
         ├── ADR-0007-snapshot-consistent-go-context-evidence.md
-        └── ADR-0008-reviewable-multiline-answers.md
+        ├── ADR-0008-reviewable-multiline-answers.md
+        └── ADR-0009-release-ready-macos-distribution.md
 ```
 
 There are currently four released production prompts: v1 and v2 question and assessment assets selected by validated runtime input version. Narrow production Pi RPC adapters, deterministic fixtures for both evaluator seams, and a daemon-connected SQLite history module with a manually triggered repository query UI are implemented, but package publication and CI configuration are not. The repository has a public README and an installable local Pi package manifest. The package has one Pi-provided peer dependency and three exact development dependencies; it has no third-party runtime npm dependency. Source-bearing assessment state remains volatile while the allowlisted learning outcome is durable and locally queryable when storage is available.
@@ -209,7 +224,8 @@ The implemented core modules and adapters are:
 - `internal/assessment`: the answer-lifecycle module. `Start`, `Submit`, and `Close` own validated evaluator values, a fixed model selection, server-owned repository/prompt provenance plus an optional bounded Session ID, cryptographic instance-local capabilities, 30-minute expiry, eight-entry/1-MiB capacity, atomic initial/F1 transitions, safe history lifecycle writes, failure invalidation, cleanup, and deterministic label derivation. Session provenance bypasses evaluator values and is used only by the dedicated history start. Source-bearing values remain volatile; the client cannot supply repository, evidence, questions, model, prompt, credential, or executable provenance.
 - `internal/history`: a deep SQLite module. `Open`, `Create`, `CreateWithPiSession`, `MarkFollowUp`, `Complete`, `Fail`, `List`, `ReviewedPiSessionIDs`, and `Close` hide protected path creation, same-owner/mode/symlink/hard-link/local-filesystem checks, one verified connection, ordered forward-only embedded schema migration, exact schema and stored-value validation, immediate transactions, idempotent terminal writes, repository-scoped bounded reads, completion-only Pi Session lookup, and startup conversion of `running` rows to `interrupted`. Schema v2 adds exactly one nullable 1–128-byte source-free `pi_session_id`; v1 rows and current Git-only starts store SQL `NULL`. Generic `Start`, `Record`, and `List` remain Session-free. No Session path, cwd, name, time, message count, parent, leaf, prompt, answer, tool call/result, summary, transcript, source, changed path, question/answer/F1/feedback text, prompt body, RPC/model output, credential, token, or executable path has an API or column. The daemon constructs, queries, and closes the store as a degradable capability and exposes the Session-specific seams only through independent authenticated routes.
 - `internal/daemon`: one deep local-runtime module whose `Run` interface owns protected runtime and durable-data directories, per-start Instance Tokens, single-instance locking, loopback HTTP lifecycle, strict protocol decoding, stable error translation, graceful shutdown, and in-memory continuation and assessment services. The two additive Go-context preview routes request the internal context policy and expose every model-visible item, relationship, limit, build value, completeness state, omission, and truncation count. Generic and Session-bound continuations retain owned exact results for five minutes under fixed 8-entry/1-MiB limits and record the v1/v2 evidence contract only in private daemon state. `/v1/question-sets` atomically consumes the continuation and selects the pure bundle/input/prompt version without client fields or a repository reread; the optional Session ID passes only to assessment provenance. Assessment and generic history remain source-free and require no schema migration. Existing preview routes remain on v1, and production never substitutes deterministic fixtures when an evaluator is unavailable.
-- `cmd/pi-learnloop`: the minimal public executable adapter. It accepts only `pi-learnloop daemon`, installs `SIGINT`/`SIGTERM` cancellation, and exposes no flags that weaken accepted security defaults.
+- `cmd/pi-learnloop`: the minimal public executable adapter. It accepts exactly `pi-learnloop daemon` or `pi-learnloop version`, installs `SIGINT`/`SIGTERM` cancellation, and exposes no flags that weaken accepted security defaults. The read-only diagnostic prints only `pi-learnloop <version>` plus LF; product version is not added to transport, history, model input, logs, or daemon errors.
+- `scripts/build-release-artifacts.sh` and `scripts/verify-release-artifacts.sh`: separate deep release modules. The builder owns exact package/toolchain checks, pure-Go cross-build flags, private staging, child cancellation, fixed ZIP composition, checksums, and atomic non-overwriting output. The independent verifier statically checks private copies of the checksummed bytes, exact contents/modes, Mach-O architecture and actual version string, dependency/build metadata, and consistent VCS provenance without executing candidates. Both accept only a product version plus an output/artifact directory; neither decides clean signed-tag eligibility or performs signing/publication.
 - `extensions/lib/daemon-client.ts`: one deep local client module whose generic and Session-bound preview, completion-only Session review, question, assessment, and history interfaces hide protected runtime-file validation, exact loopback URL validation, instance verification, proxy-independent HTTP, Instance Token authentication, bounded response decoding, and strict enriched-response validation. It requires every v2 context field, exact fixed limits, closed enums and keys, count/truncation consistency, C-reference ordering, content hashes, relationship validity, and repository-derived byte accounting; old v1 or unknown response shapes fail closed without fallback. Preview discovery races retry once; Session review, question, assessment, and history operations never retry.
 - `extensions/lib/learn-command.ts`: the manual interaction module. `/learn` accepts only explicit supported selections. Its Session branch accepts only the newest at most 20 unique bounded IDs from the injected Pi listing seam, removes only daemon-reported completed IDs, displays no rich Session metadata, and requires a separate Git selection. Both branches render every changed excerpt, changed-import/context item, relationship, build value, analysis total, fixed limit, completeness state, omission, hash, byte estimate, and truncation count before evaluation. They validate active Pi model metadata and require explicit model/scope/size/cost confirmations. The same module now hides all answer-editor state behind Pi's injected `editor(title, prefill?)` seam: it discloses external-editor temporary-file/resource limits once, collects trimmed LF-only bounded Q1/Q2/Q3 drafts, exposes only fixed ID review actions, preserves accepted values across invalid or cancelled edits, and uses the editor once more for an optional F1 without retry or fallback. It accepts daemon-validated E/C evidence references, renders feedback plus the Go-derived label, and warns when the successful result was not saved without starting an Agent turn or retry. `/learn-history` accepts no arguments, requests 20 records for the trusted current working directory, and concisely renders lifecycle, revisions, outcomes, and evaluator provenance without a confirmation or model client.
 - `extensions/pi-learnloop.ts`: the minimal Pi adapter. It registers only the manual `/learn` and `/learn-history` commands and injects exactly `SessionManager.list(ctx.cwd, ctx.sessionManager.getSessionDir())` into the Session branch; it contains no evidence, persistence, or evaluation rules.
@@ -401,6 +417,24 @@ The implemented Pi extension has these manifest-derived checks:
 npm run typecheck
 npm test
 ```
+
+Local release verification on macOS uses the existing Node runtime, native
+`zip`/`unzip`/`nm`, Git, and exact Go 1.27.1 on `PATH`:
+
+```text
+scripts/test-release-artifacts.sh
+scripts/build-release-artifacts.sh 0.1.0 <output-directory>
+scripts/verify-release-artifacts.sh 0.1.0 <artifact-directory>
+```
+
+The output directory must be absent or empty, outside the checkout, with an
+existing parent. Each ZIP contains only `pi-learnloop` (0755), `LICENSE` (0644),
+and the fixed unsigned-candidate `README.md` (0644); `SHA256SUMS` covers the two
+ZIPs. Self-tests compare repeated unsigned binary hashes, execute only the
+native diagnostic, and exercise invalid versions/toolchains, output refusal,
+interruption/partial cleanup, corrupted contents/permissions/checksums, and
+invalid or mixed build provenance. No live model is involved. ZIP bytes are not
+claimed reproducible, and native AMD64 execution remains a Phase 2 gate.
 
 The Agent validator checks four synthetic evaluator failure categories, released prompt metadata and safety requirements, the deny-by-default capability policy, stable asset versions, and privacy-safe run provenance without calling a model.
 
