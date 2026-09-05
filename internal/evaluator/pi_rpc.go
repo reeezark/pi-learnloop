@@ -1,149 +1,405 @@
 package evaluator
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
 	piVersionPreflightTimeout = 2 * time.Second
+	runtimePreflightTimeout   = 10 * time.Second
 	evaluatorProcessTimeout   = 120 * time.Second
+	maxWorkerRequestBytes     = 3 * 1024 * 1024
 	maxRPCStdoutBytes         = 2 * 1024 * 1024
 	maxRPCStderrBytes         = 64 * 1024
+	maxAssistantTextBytes     = 64 * 1024
 	maxVersionOutputBytes     = 4 * 1024
+	maxPiPackageJSONBytes     = 64 * 1024
+	maxPackageTraversal       = 6
+	workerSchemaVersion       = 1
 )
 
-var errRPCFailure = errors.New("Pi evaluator RPC failed")
+var errRPCFailure = errors.New("Pi evaluator runtime failed")
 
-// PiRPCEvaluator runs one isolated, no-tools Pi RPC process per evaluation.
-// Its executable path and released prompt are frozen at daemon startup.
+//go:embed pi_model_worker.mjs
+var piModelWorkerSource string
+
+type piModelRuntime struct {
+	nodeExecutable   string
+	piExecutable     string
+	sdkEntry         string
+	settingsEntry    string
+	httpEntry        string
+	attributionEntry string
+}
+
+// PiRPCEvaluator retains the established daemon-facing type while using one
+// fresh, isolated Pi ModelRuntime child for each evaluation.
 type PiRPCEvaluator struct {
-	executable     string
+	runtime        piModelRuntime
 	systemPrompt   string
 	systemPromptV2 string
 }
 
-// PiRPCAssessmentEvaluator runs one isolated, no-tools Pi RPC process per
-// answer-assessment turn. It has a separate narrow interface from question
-// generation while sharing only private process-isolation mechanics.
+// PiRPCAssessmentEvaluator keeps assessment generation behind its existing
+// narrow interface and shares only private process-isolation mechanics.
 type PiRPCAssessmentEvaluator struct {
-	executable     string
+	runtime        piModelRuntime
 	systemPrompt   string
 	systemPromptV2 string
 }
 
-// NewPiRPCEvaluator resolves and preflights the supported Pi executable once.
-// All failures are intentionally opaque because paths and raw process output
-// must not cross the evaluator boundary.
 func NewPiRPCEvaluator(ctx context.Context, systemPrompt string) (*PiRPCEvaluator, error) {
-	executable, err := resolvePiRPCExecutable(ctx, systemPrompt)
+	runtime, err := resolvePiModelRuntime(ctx, systemPrompt)
 	if err != nil {
 		return nil, err
 	}
-	return &PiRPCEvaluator{executable: executable, systemPrompt: systemPrompt}, nil
+	return &PiRPCEvaluator{runtime: runtime, systemPrompt: systemPrompt}, nil
 }
 
-// NewPiRPCAssessmentEvaluator resolves and preflights the supported Pi
-// executable once and freezes the released assessment prompt.
 func NewPiRPCAssessmentEvaluator(ctx context.Context, systemPrompt string) (*PiRPCAssessmentEvaluator, error) {
-	executable, err := resolvePiRPCExecutable(ctx, systemPrompt)
+	runtime, err := resolvePiModelRuntime(ctx, systemPrompt)
 	if err != nil {
 		return nil, err
 	}
-	return &PiRPCAssessmentEvaluator{executable: executable, systemPrompt: systemPrompt}, nil
+	return &PiRPCAssessmentEvaluator{runtime: runtime, systemPrompt: systemPrompt}, nil
 }
 
-// NewVersionedPiRPCEvaluator freezes both released question prompts behind one
-// evaluator seam. Runtime input version, not the client, selects the prompt.
 func NewVersionedPiRPCEvaluator(ctx context.Context, systemPromptV1, systemPromptV2 string) (*PiRPCEvaluator, error) {
-	executable, err := resolvePiRPCExecutable(ctx, systemPromptV1)
-	if err != nil || validateAdditionalPrompt(systemPromptV2) != nil {
+	runtime, err := resolvePiModelRuntime(ctx, systemPromptV1)
+	if err != nil || validateSystemPrompt(systemPromptV2) != nil {
 		return nil, errors.New("Pi evaluator is unavailable")
 	}
-	return &PiRPCEvaluator{executable: executable, systemPrompt: systemPromptV1, systemPromptV2: systemPromptV2}, nil
+	return &PiRPCEvaluator{runtime: runtime, systemPrompt: systemPromptV1, systemPromptV2: systemPromptV2}, nil
 }
 
-// NewVersionedPiRPCAssessmentEvaluator freezes both released assessment prompts
-// behind the unchanged narrow assessment seam.
 func NewVersionedPiRPCAssessmentEvaluator(ctx context.Context, systemPromptV1, systemPromptV2 string) (*PiRPCAssessmentEvaluator, error) {
-	executable, err := resolvePiRPCExecutable(ctx, systemPromptV1)
-	if err != nil || validateAdditionalPrompt(systemPromptV2) != nil {
+	runtime, err := resolvePiModelRuntime(ctx, systemPromptV1)
+	if err != nil || validateSystemPrompt(systemPromptV2) != nil {
 		return nil, errors.New("Pi evaluator is unavailable")
 	}
-	return &PiRPCAssessmentEvaluator{executable: executable, systemPrompt: systemPromptV1, systemPromptV2: systemPromptV2}, nil
+	return &PiRPCAssessmentEvaluator{runtime: runtime, systemPrompt: systemPromptV1, systemPromptV2: systemPromptV2}, nil
 }
 
-func validateAdditionalPrompt(systemPrompt string) error {
-	_, err := BuildPiArguments(ModelSelection{
-		PiVersion: SupportedPiVersion, Provider: "preflight-provider", ModelID: "preflight-model", ThinkingLevel: "off",
-	}, systemPrompt)
-	return err
-}
-
-func resolvePiRPCExecutable(ctx context.Context, systemPrompt string) (string, error) {
-	if ctx == nil {
-		return "", errors.New("Pi evaluator is unavailable")
+// NewVersionedPiModelEvaluators performs the shared runtime preflight once and
+// returns the two established evaluator interfaces over the same frozen paths.
+// Each Evaluate call still starts its own fresh worker process.
+func NewVersionedPiModelEvaluators(ctx context.Context, questionV1, questionV2, assessmentV1, assessmentV2 string) (*PiRPCEvaluator, *PiRPCAssessmentEvaluator, error) {
+	if validateSystemPrompt(questionV2) != nil || validateSystemPrompt(assessmentV1) != nil || validateSystemPrompt(assessmentV2) != nil {
+		return nil, nil, errors.New("Pi evaluator is unavailable")
 	}
-	if _, err := BuildPiArguments(ModelSelection{
-		PiVersion:     SupportedPiVersion,
-		Provider:      "preflight-provider",
-		ModelID:       "preflight-model",
-		ThinkingLevel: "off",
-	}, systemPrompt); err != nil {
-		return "", errors.New("Pi evaluator is unavailable")
-	}
-
-	executable, err := exec.LookPath("pi")
+	runtime, err := resolvePiModelRuntime(ctx, questionV1)
 	if err != nil {
-		return "", errors.New("Pi evaluator is unavailable")
+		return nil, nil, err
+	}
+	return &PiRPCEvaluator{runtime: runtime, systemPrompt: questionV1, systemPromptV2: questionV2},
+		&PiRPCAssessmentEvaluator{runtime: runtime, systemPrompt: assessmentV1, systemPromptV2: assessmentV2}, nil
+}
+
+func resolvePiModelRuntime(ctx context.Context, systemPrompt string) (piModelRuntime, error) {
+	unavailable := func() (piModelRuntime, error) {
+		return piModelRuntime{}, errors.New("Pi evaluator is unavailable")
+	}
+	if ctx == nil || validateSystemPrompt(systemPrompt) != nil {
+		return unavailable()
+	}
+	nodeExecutable, err := resolveExecutable("node")
+	if err != nil || preflightNodeVersion(ctx, nodeExecutable) != nil {
+		return unavailable()
+	}
+	piExecutable, err := resolveExecutable("pi")
+	if err != nil || preflightPiVersion(ctx, piExecutable) != nil {
+		return unavailable()
+	}
+	runtime, err := resolvePiPackage(piExecutable)
+	if err != nil {
+		return unavailable()
+	}
+	runtime.nodeExecutable = nodeExecutable
+	runtime.piExecutable = piExecutable
+	if err := preflightModelWorker(ctx, runtime); err != nil {
+		return unavailable()
+	}
+	return runtime, nil
+}
+
+func resolveExecutable(name string) (string, error) {
+	executable, err := exec.LookPath(name)
+	if err != nil {
+		return "", err
 	}
 	if !filepath.IsAbs(executable) {
 		executable, err = filepath.Abs(executable)
 		if err != nil {
-			return "", errors.New("Pi evaluator is unavailable")
+			return "", err
 		}
 	}
 	executable, err = filepath.EvalSymlinks(executable)
 	if err != nil {
-		return "", errors.New("Pi evaluator is unavailable")
+		return "", err
 	}
 	info, err := os.Stat(executable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return "", errors.New("Pi evaluator is unavailable")
-	}
-	if err := preflightPiVersion(ctx, executable); err != nil {
-		return "", errors.New("Pi evaluator is unavailable")
+		return "", errors.New("executable is unavailable")
 	}
 	return executable, nil
 }
 
-func preflightPiVersion(ctx context.Context, executable string) error {
-	preflightCtx, cancel := context.WithTimeout(ctx, piVersionPreflightTimeout)
-	defer cancel()
-	stdout := newBoundedCapture(maxVersionOutputBytes)
-	stderr := newBoundedCapture(maxVersionOutputBytes)
-	command := exec.CommandContext(preflightCtx, executable, "--version")
-	command.Stdout = stdout
-	command.Stderr = stderr
-	if err := command.Run(); err != nil || preflightCtx.Err() != nil || stdout.overflow || stderr.overflow {
+func preflightNodeVersion(ctx context.Context, executable string) error {
+	stdout, err := boundedCommand(ctx, piVersionPreflightTimeout, maxVersionOutputBytes, maxVersionOutputBytes, executable, "--version")
+	if err != nil {
+		return err
+	}
+	version := strings.TrimSpace(string(stdout))
+	if !strings.HasPrefix(version, "v") {
 		return errRPCFailure
 	}
-	if strings.TrimSpace(stdout.String()) != SupportedPiVersion {
+	parts := strings.Split(strings.TrimPrefix(version, "v"), ".")
+	if len(parts) != 3 {
+		return errRPCFailure
+	}
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	_, patchErr := strconv.Atoi(parts[2])
+	if majorErr != nil || minorErr != nil || patchErr != nil || major < 22 || (major == 22 && minor < 19) {
 		return errRPCFailure
 	}
 	return nil
 }
 
-// Evaluate sends exactly one validated runtime input to a new Pi RPC process.
+func preflightPiVersion(ctx context.Context, executable string) error {
+	stdout, err := boundedCommand(ctx, piVersionPreflightTimeout, maxVersionOutputBytes, maxVersionOutputBytes, executable, "--version")
+	if err != nil || strings.TrimSpace(string(stdout)) != SupportedPiVersion {
+		return errRPCFailure
+	}
+	return nil
+}
+
+type piPackageManifest struct {
+	Name    string          `json:"name"`
+	Version string          `json:"version"`
+	Main    string          `json:"main"`
+	Bin     json.RawMessage `json:"bin"`
+}
+
+func resolvePiPackage(piExecutable string) (piModelRuntime, error) {
+	directory := filepath.Dir(piExecutable)
+	for depth := 0; depth <= maxPackageTraversal; depth++ {
+		manifestPath := filepath.Join(directory, "package.json")
+		content, err := readBoundedRegularFile(manifestPath, maxPiPackageJSONBytes)
+		if err == nil {
+			return runtimeFromManifest(directory, piExecutable, content)
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+		directory = parent
+	}
+	return piModelRuntime{}, errors.New("owning Pi package is unavailable")
+}
+
+func runtimeFromManifest(root, piExecutable string, content []byte) (piModelRuntime, error) {
+	if rejectDuplicateJSONKeys(content) != nil {
+		return piModelRuntime{}, errRPCFailure
+	}
+	var manifest piPackageManifest
+	if json.Unmarshal(content, &manifest) != nil || manifest.Name != "@earendil-works/pi-coding-agent" ||
+		manifest.Version != SupportedPiVersion || manifest.Main == "" {
+		return piModelRuntime{}, errRPCFailure
+	}
+	var binPath string
+	if json.Unmarshal(manifest.Bin, &binPath) != nil {
+		var bins map[string]string
+		if json.Unmarshal(manifest.Bin, &bins) != nil {
+			return piModelRuntime{}, errRPCFailure
+		}
+		binPath = bins["pi"]
+	}
+	resolvedBin, err := resolvePackageFile(root, binPath, true)
+	if err != nil || resolvedBin != piExecutable {
+		return piModelRuntime{}, errRPCFailure
+	}
+	sdkEntry, err := resolvePackageFile(root, manifest.Main, false)
+	if err != nil {
+		return piModelRuntime{}, errRPCFailure
+	}
+	settingsEntry, err := resolvePackageFile(root, "dist/core/settings-manager.js", false)
+	if err != nil {
+		return piModelRuntime{}, errRPCFailure
+	}
+	httpEntry, err := resolvePackageFile(root, "dist/core/http-dispatcher.js", false)
+	if err != nil {
+		return piModelRuntime{}, errRPCFailure
+	}
+	attributionEntry, err := resolvePackageFile(root, "dist/core/provider-attribution.js", false)
+	if err != nil {
+		return piModelRuntime{}, errRPCFailure
+	}
+	return piModelRuntime{sdkEntry: sdkEntry, settingsEntry: settingsEntry, httpEntry: httpEntry, attributionEntry: attributionEntry}, nil
+}
+
+func resolvePackageFile(root, relative string, executable bool) (string, error) {
+	if relative == "" || filepath.IsAbs(relative) {
+		return "", errRPCFailure
+	}
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	candidate, err := filepath.EvalSymlinks(filepath.Join(root, filepath.Clean(relative)))
+	if err != nil {
+		return "", err
+	}
+	relativeToRoot, err := filepath.Rel(root, candidate)
+	if err != nil || relativeToRoot == ".." || strings.HasPrefix(relativeToRoot, ".."+string(os.PathSeparator)) {
+		return "", errRPCFailure
+	}
+	info, err := os.Stat(candidate)
+	if err != nil || !info.Mode().IsRegular() || (executable && info.Mode().Perm()&0o111 == 0) {
+		return "", errRPCFailure
+	}
+	return candidate, nil
+}
+
+func readBoundedRegularFile(path string, maximum int64) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maximum {
+		return nil, errRPCFailure
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || int64(len(content)) > maximum {
+		return nil, errRPCFailure
+	}
+	return content, nil
+}
+
+func preflightModelWorker(ctx context.Context, runtime piModelRuntime) error {
+	response, err := runModelWorker(ctx, runtime, workerRequest{
+		SchemaVersion:    workerSchemaVersion,
+		Action:           "preflight",
+		SDKEntry:         runtime.sdkEntry,
+		SettingsEntry:    runtime.settingsEntry,
+		HTTPEntry:        runtime.httpEntry,
+		AttributionEntry: runtime.attributionEntry,
+	}, runtimePreflightTimeout)
+	if err != nil || response.Status != "ready" {
+		return errRPCFailure
+	}
+	return nil
+}
+
+type workerModel struct {
+	Provider      string `json:"provider"`
+	ID            string `json:"id"`
+	ThinkingLevel string `json:"thinking_level"`
+}
+
+type workerRequest struct {
+	SchemaVersion    int          `json:"schema_version"`
+	Action           string       `json:"action"`
+	SDKEntry         string       `json:"sdk_entry"`
+	SettingsEntry    string       `json:"settings_manager_entry"`
+	HTTPEntry        string       `json:"http_dispatcher_entry"`
+	AttributionEntry string       `json:"attribution_entry"`
+	SystemPrompt     string       `json:"system_prompt,omitempty"`
+	Message          string       `json:"message,omitempty"`
+	Model            *workerModel `json:"model,omitempty"`
+}
+
+type workerResponse struct {
+	SchemaVersion int    `json:"schema_version"`
+	Status        string `json:"status"`
+	Text          string `json:"text,omitempty"`
+	Code          string `json:"code,omitempty"`
+}
+
+func runModelWorker(ctx context.Context, runtime piModelRuntime, request workerRequest, timeout time.Duration) (workerResponse, error) {
+	if ctx == nil {
+		return workerResponse{}, errRPCFailure
+	}
+	content, err := json.Marshal(request)
+	if err != nil || len(content)+1 > maxWorkerRequestBytes {
+		return workerResponse{}, errRPCFailure
+	}
+	content = append(content, '\n')
+	workerSource := piModelWorkerSource + "\nawait workerMain();\n"
+	processCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	command := exec.CommandContext(processCtx, runtime.nodeExecutable, "--input-type=module", "--eval", workerSource)
+	command.Dir = os.TempDir()
+	command.Stdin = bytes.NewReader(content)
+	stdout := newBoundedCapture(maxRPCStdoutBytes)
+	stderr := newBoundedCapture(maxRPCStderrBytes)
+	command.Stdout = stdout
+	command.Stderr = stderr
+	err = command.Run()
+	if processCtx.Err() != nil {
+		return workerResponse{}, processCtx.Err()
+	}
+	if err != nil || stdout.overflow || stderr.overflow {
+		return workerResponse{}, errRPCFailure
+	}
+	frame := stdout.Bytes()
+	if len(frame) < 2 || frame[len(frame)-1] != '\n' || bytes.Contains(frame[:len(frame)-1], []byte{'\n'}) || bytes.Contains(frame, []byte{'\r'}) {
+		return workerResponse{}, errRPCFailure
+	}
+	frame = frame[:len(frame)-1]
+	if rejectDuplicateJSONKeys(frame) != nil {
+		return workerResponse{}, errRPCFailure
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(frame, &raw) != nil {
+		return workerResponse{}, errRPCFailure
+	}
+	var response workerResponse
+	if json.Unmarshal(frame, &response) != nil || response.SchemaVersion != workerSchemaVersion {
+		return workerResponse{}, errRPCFailure
+	}
+	switch response.Status {
+	case "ready":
+		if !hasExactKeys(raw, "schema_version", "status") {
+			return workerResponse{}, errRPCFailure
+		}
+	case "ok":
+		if !hasExactKeys(raw, "schema_version", "status", "text") || response.Text == "" || len(response.Text) > maxAssistantTextBytes {
+			return workerResponse{}, errRPCFailure
+		}
+	case "error":
+		if !hasExactKeys(raw, "schema_version", "status", "code") || response.Code != "runtime_failed" {
+			return workerResponse{}, errRPCFailure
+		}
+		return workerResponse{}, errRPCFailure
+	default:
+		return workerResponse{}, errRPCFailure
+	}
+	return response, nil
+}
+
+func boundedCommand(ctx context.Context, timeout time.Duration, stdoutLimit, stderrLimit int, executable string, arguments ...string) ([]byte, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	stdout := newBoundedCapture(stdoutLimit)
+	stderr := newBoundedCapture(stderrLimit)
+	command := exec.CommandContext(commandCtx, executable, arguments...)
+	command.Dir = os.TempDir()
+	command.Stdout = stdout
+	command.Stderr = stderr
+	if err := command.Run(); err != nil || commandCtx.Err() != nil || stdout.overflow || stderr.overflow {
+		return nil, errRPCFailure
+	}
+	return append([]byte(nil), stdout.Bytes()...), nil
+}
+
 func (evaluator *PiRPCEvaluator) Evaluate(ctx context.Context, input Input, selection ModelSelection) (QuestionSet, error) {
 	if evaluator == nil || ctx == nil {
 		return QuestionSet{}, invalidInput(errors.New("evaluator and context are required"))
@@ -163,7 +419,7 @@ func (evaluator *PiRPCEvaluator) Evaluate(ctx context.Context, input Input, sele
 	if err != nil {
 		return QuestionSet{}, invalidInput(err)
 	}
-	assistantText, err := evaluatePiRPC(ctx, evaluator.executable, systemPrompt, message, selection)
+	assistantText, err := evaluatePiModel(ctx, evaluator.runtime, systemPrompt, message, selection)
 	if err != nil {
 		return QuestionSet{}, err
 	}
@@ -173,8 +429,6 @@ func (evaluator *PiRPCEvaluator) Evaluate(ctx context.Context, input Input, sele
 	return ParseQuestionSet([]byte(assistantText), references)
 }
 
-// EvaluateAssessment sends exactly one validated assessment turn to a new Pi
-// RPC process. The process is never retained across human input.
 func (evaluator *PiRPCAssessmentEvaluator) EvaluateAssessment(ctx context.Context, input AssessmentInput, selection ModelSelection) (AssessmentTurn, error) {
 	if evaluator == nil || ctx == nil {
 		return AssessmentTurn{}, invalidInput(errors.New("assessment evaluator and context are required"))
@@ -193,7 +447,7 @@ func (evaluator *PiRPCAssessmentEvaluator) EvaluateAssessment(ctx context.Contex
 	if err != nil {
 		return AssessmentTurn{}, invalidInput(err)
 	}
-	assistantText, err := evaluatePiRPC(ctx, evaluator.executable, systemPrompt, message, selection)
+	assistantText, err := evaluatePiModel(ctx, evaluator.runtime, systemPrompt, message, selection)
 	if err != nil {
 		return AssessmentTurn{}, err
 	}
@@ -201,6 +455,32 @@ func (evaluator *PiRPCAssessmentEvaluator) EvaluateAssessment(ctx context.Contex
 		return AssessmentTurn{}, invalidOutput("assessment output exceeds %d bytes", MaxAssessmentTurnBytes)
 	}
 	return ParseAssessmentTurn([]byte(assistantText), input)
+}
+
+func evaluatePiModel(ctx context.Context, runtime piModelRuntime, systemPrompt string, message []byte, selection ModelSelection) (string, error) {
+	if validateSystemPrompt(systemPrompt) != nil {
+		return "", invalidInput(errors.New("system prompt is invalid"))
+	}
+	response, err := runModelWorker(ctx, runtime, workerRequest{
+		SchemaVersion:    workerSchemaVersion,
+		Action:           "evaluate",
+		SDKEntry:         runtime.sdkEntry,
+		SettingsEntry:    runtime.settingsEntry,
+		HTTPEntry:        runtime.httpEntry,
+		AttributionEntry: runtime.attributionEntry,
+		SystemPrompt:     systemPrompt,
+		Message:          string(message),
+		Model: &workerModel{
+			Provider: selection.Provider, ID: selection.ModelID, ThinkingLevel: selection.ThinkingLevel,
+		},
+	}, evaluatorProcessTimeout)
+	if err != nil {
+		return "", evaluationError(ctx, err)
+	}
+	if response.Status != "ok" {
+		return "", errRPCFailure
+	}
+	return response.Text, nil
 }
 
 func (evaluator *PiRPCEvaluator) questionPrompt(schemaVersion int) (string, error) {
@@ -231,78 +511,16 @@ func (evaluator *PiRPCAssessmentEvaluator) assessmentPrompt(schemaVersion int) (
 	return "", errors.New("assessment evaluator prompt is unavailable")
 }
 
-func evaluatePiRPC(ctx context.Context, executable, systemPrompt string, message []byte, selection ModelSelection) (string, error) {
-	arguments, err := BuildPiArguments(selection, systemPrompt)
-	if err != nil {
-		return "", err
-	}
-	evaluationCtx, cancel := context.WithTimeout(ctx, evaluatorProcessTimeout)
-	defer cancel()
-	process, err := startRPCProcess(evaluationCtx, executable, arguments)
-	if err != nil {
-		return "", errRPCFailure
-	}
-	defer process.close()
-
-	if err := process.send(evaluationCtx, map[string]any{
-		"id":      "pll-setup-retry",
-		"type":    "set_auto_retry",
-		"enabled": false,
-	}); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	if err := process.awaitSimpleResponse(evaluationCtx, "pll-setup-retry", "set_auto_retry"); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	if err := process.send(evaluationCtx, map[string]any{
-		"id":      "pll-setup-compaction",
-		"type":    "set_auto_compaction",
-		"enabled": false,
-	}); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	if err := process.awaitSimpleResponse(evaluationCtx, "pll-setup-compaction", "set_auto_compaction"); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	if err := process.send(evaluationCtx, map[string]any{
-		"id":   "pll-get-commands",
-		"type": "get_commands",
-	}); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	if err := process.awaitEmptyCommands(evaluationCtx, "pll-get-commands"); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	if err := process.send(evaluationCtx, map[string]any{
-		"id":      "pll-prompt",
-		"type":    "prompt",
-		"message": string(message),
-	}); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	if err := process.awaitPromptSettled(evaluationCtx, "pll-prompt"); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	if err := process.send(evaluationCtx, map[string]any{
-		"id":   "pll-last-text",
-		"type": "get_last_assistant_text",
-	}); err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	assistantText, err := process.awaitLastAssistantText(evaluationCtx, "pll-last-text")
-	if err != nil {
-		return "", evaluationError(evaluationCtx)
-	}
-	return assistantText, nil
-}
-
 func inputReferences(input Input) ([]string, error) {
 	return runtimeInputReferences(input)
 }
 
-func evaluationError(ctx context.Context) error {
+func evaluationError(ctx context.Context, workerError error) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if errors.Is(workerError, context.DeadlineExceeded) || errors.Is(workerError, context.Canceled) {
+		return workerError
 	}
 	return errRPCFailure
 }
@@ -332,434 +550,10 @@ func (capture *boundedCapture) Write(content []byte) (int, error) {
 	return len(content), nil
 }
 
+func (capture *boundedCapture) Bytes() []byte {
+	return capture.buffer.Bytes()
+}
+
 func (capture *boundedCapture) String() string {
 	return capture.buffer.String()
-}
-
-type rpcFrame struct {
-	content []byte
-	err     error
-}
-
-type rpcProcess struct {
-	command        *exec.Cmd
-	stdin          io.WriteCloser
-	frames         <-chan rpcFrame
-	stderrOverflow <-chan struct{}
-	wait           <-chan error
-	cancelReaders  context.CancelFunc
-	waited         bool
-}
-
-func startRPCProcess(ctx context.Context, executable string, arguments []string) (*rpcProcess, error) {
-	command := exec.Command(executable, arguments...)
-	command.Dir = os.TempDir()
-	stdin, err := command.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, err
-	}
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, err
-	}
-	if err := command.Start(); err != nil {
-		_ = stdin.Close()
-		return nil, err
-	}
-
-	readerCtx, cancelReaders := context.WithCancel(ctx)
-	frames := make(chan rpcFrame, 8)
-	stderrOverflow := make(chan struct{}, 1)
-	wait := make(chan error, 1)
-	go readRPCFrames(readerCtx, stdout, frames)
-	go monitorRPCStderr(stderr, stderrOverflow)
-	go func() {
-		wait <- command.Wait()
-	}()
-	return &rpcProcess{
-		command:        command,
-		stdin:          stdin,
-		frames:         frames,
-		stderrOverflow: stderrOverflow,
-		wait:           wait,
-		cancelReaders:  cancelReaders,
-	}, nil
-}
-
-func (process *rpcProcess) close() {
-	process.cancelReaders()
-	_ = process.stdin.Close()
-	if !process.waited {
-		_ = process.command.Process.Kill()
-		<-process.wait
-		process.waited = true
-	}
-}
-
-func (process *rpcProcess) send(ctx context.Context, command any) error {
-	content, err := json.Marshal(command)
-	if err != nil {
-		return errRPCFailure
-	}
-	content = append(content, '\n')
-	done := make(chan error, 1)
-	go func() {
-		_, err := process.stdin.Write(content)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (process *rpcProcess) next(ctx context.Context) ([]byte, error) {
-	select {
-	case frame, ok := <-process.frames:
-		if !ok || frame.err != nil {
-			return nil, errRPCFailure
-		}
-		return frame.content, nil
-	default:
-	}
-	select {
-	case frame, ok := <-process.frames:
-		if !ok || frame.err != nil {
-			return nil, errRPCFailure
-		}
-		return frame.content, nil
-	case <-process.stderrOverflow:
-		return nil, errRPCFailure
-	case <-process.wait:
-		process.waited = true
-		return nil, errRPCFailure
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (process *rpcProcess) awaitSimpleResponse(ctx context.Context, id, command string) error {
-	content, err := process.next(ctx)
-	if err != nil {
-		return err
-	}
-	object, err := strictRPCObject(content)
-	if err != nil {
-		return err
-	}
-	return validateSimpleResponse(object, id, command)
-}
-
-func (process *rpcProcess) awaitEmptyCommands(ctx context.Context, id string) error {
-	content, err := process.next(ctx)
-	if err != nil {
-		return err
-	}
-	object, err := strictRPCObject(content)
-	if err != nil || !hasExactKeys(object, "id", "type", "command", "success", "data") {
-		return errRPCFailure
-	}
-	if !matchesResponse(object, id, "get_commands") {
-		return errRPCFailure
-	}
-	var data map[string]json.RawMessage
-	if err := json.Unmarshal(object["data"], &data); err != nil || !hasExactKeys(data, "commands") {
-		return errRPCFailure
-	}
-	var commands []json.RawMessage
-	if err := json.Unmarshal(data["commands"], &commands); err != nil || commands == nil || len(commands) != 0 {
-		return errRPCFailure
-	}
-	return nil
-}
-
-func (process *rpcProcess) awaitPromptSettled(ctx context.Context, id string) error {
-	accepted := false
-	started := false
-	settled := false
-	for !accepted || !settled {
-		content, err := process.next(ctx)
-		if err != nil {
-			return err
-		}
-		object, err := strictRPCObject(content)
-		if err != nil {
-			return err
-		}
-		kind, err := rpcObjectType(object)
-		if err != nil {
-			return err
-		}
-		if kind == "response" {
-			if accepted || validateSimpleResponse(object, id, "prompt") != nil {
-				return errRPCFailure
-			}
-			accepted = true
-			continue
-		}
-		event, err := validateRPCEvent(kind, object)
-		if err != nil {
-			return err
-		}
-		switch event {
-		case rpcEventStarted:
-			if started || settled {
-				return errRPCFailure
-			}
-			started = true
-		case rpcEventSettled:
-			if !started || settled {
-				return errRPCFailure
-			}
-			settled = true
-		}
-	}
-	return nil
-}
-
-func (process *rpcProcess) awaitLastAssistantText(ctx context.Context, id string) (string, error) {
-	content, err := process.next(ctx)
-	if err != nil {
-		return "", err
-	}
-	object, err := strictRPCObject(content)
-	if err != nil || !hasExactKeys(object, "id", "type", "command", "success", "data") {
-		return "", errRPCFailure
-	}
-	if !matchesResponse(object, id, "get_last_assistant_text") {
-		return "", errRPCFailure
-	}
-	var data map[string]json.RawMessage
-	if err := json.Unmarshal(object["data"], &data); err != nil || !hasExactKeys(data, "text") {
-		return "", errRPCFailure
-	}
-	var text *string
-	if err := json.Unmarshal(data["text"], &text); err != nil || text == nil {
-		return "", errRPCFailure
-	}
-	return *text, nil
-}
-
-func strictRPCObject(content []byte) (map[string]json.RawMessage, error) {
-	if len(content) == 0 || !json.Valid(content) || rejectDuplicateJSONKeys(content) != nil {
-		return nil, errRPCFailure
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(content, &object); err != nil || object == nil {
-		return nil, errRPCFailure
-	}
-	return object, nil
-}
-
-func validateSimpleResponse(object map[string]json.RawMessage, id, command string) error {
-	if !hasExactKeys(object, "id", "type", "command", "success") || !matchesResponse(object, id, command) {
-		return errRPCFailure
-	}
-	return nil
-}
-
-func matchesResponse(object map[string]json.RawMessage, id, command string) bool {
-	var responseType, responseID, responseCommand string
-	var success bool
-	return json.Unmarshal(object["type"], &responseType) == nil && responseType == "response" &&
-		json.Unmarshal(object["id"], &responseID) == nil && responseID == id &&
-		json.Unmarshal(object["command"], &responseCommand) == nil && responseCommand == command &&
-		json.Unmarshal(object["success"], &success) == nil && success
-}
-
-func rpcObjectType(object map[string]json.RawMessage) (string, error) {
-	raw, exists := object["type"]
-	if !exists {
-		return "", errRPCFailure
-	}
-	var kind string
-	if err := json.Unmarshal(raw, &kind); err != nil || kind == "" {
-		return "", errRPCFailure
-	}
-	return kind, nil
-}
-
-type rpcEvent int
-
-const (
-	rpcEventNormal rpcEvent = iota
-	rpcEventStarted
-	rpcEventSettled
-)
-
-func validateRPCEvent(kind string, object map[string]json.RawMessage) (rpcEvent, error) {
-	switch kind {
-	case "agent_start":
-		if !hasExactKeys(object, "type") {
-			return rpcEventNormal, errRPCFailure
-		}
-		return rpcEventStarted, nil
-	case "agent_settled":
-		if !hasExactKeys(object, "type") {
-			return rpcEventNormal, errRPCFailure
-		}
-		return rpcEventSettled, nil
-	case "turn_start":
-		if !hasExactKeys(object, "type") {
-			return rpcEventNormal, errRPCFailure
-		}
-		return rpcEventNormal, nil
-	case "message_start", "message_end":
-		if _, exists := object["message"]; !exists || containsToolValue(object["message"]) {
-			return rpcEventNormal, errRPCFailure
-		}
-		return rpcEventNormal, nil
-	case "message_update":
-		var update map[string]json.RawMessage
-		if raw, exists := object["assistantMessageEvent"]; !exists || json.Unmarshal(raw, &update) != nil {
-			return rpcEventNormal, errRPCFailure
-		}
-		var updateType string
-		if json.Unmarshal(update["type"], &updateType) != nil {
-			return rpcEventNormal, errRPCFailure
-		}
-		switch updateType {
-		case "start", "text_start", "text_delta", "text_end", "thinking_start", "thinking_delta", "thinking_end":
-		case "done":
-			var reason string
-			if json.Unmarshal(update["reason"], &reason) != nil || (reason != "stop" && reason != "length") {
-				return rpcEventNormal, errRPCFailure
-			}
-			if message, exists := update["message"]; !exists || containsToolValue(message) {
-				return rpcEventNormal, errRPCFailure
-			}
-		default:
-			return rpcEventNormal, errRPCFailure
-		}
-		return rpcEventNormal, nil
-	case "turn_end":
-		var toolResults []json.RawMessage
-		if raw, exists := object["toolResults"]; !exists || json.Unmarshal(raw, &toolResults) != nil || len(toolResults) != 0 {
-			return rpcEventNormal, errRPCFailure
-		}
-		if raw, exists := object["message"]; !exists || containsToolValue(raw) {
-			return rpcEventNormal, errRPCFailure
-		}
-		return rpcEventNormal, nil
-	case "agent_end":
-		var willRetry bool
-		if raw, exists := object["willRetry"]; !exists || json.Unmarshal(raw, &willRetry) != nil || willRetry {
-			return rpcEventNormal, errRPCFailure
-		}
-		if raw, exists := object["messages"]; !exists || containsToolValue(raw) {
-			return rpcEventNormal, errRPCFailure
-		}
-		return rpcEventNormal, nil
-	case "tool_execution_start", "tool_execution_update", "tool_execution_end",
-		"bash_execution_update", "extension_ui_request", "extension_error",
-		"auto_retry_start", "auto_retry_end", "compaction_start", "compaction_end",
-		"summarization_retry_scheduled", "summarization_retry_attempt_start", "summarization_retry_finished",
-		"queue_update":
-		return rpcEventNormal, errRPCFailure
-	default:
-		return rpcEventNormal, errRPCFailure
-	}
-}
-
-func containsToolValue(content json.RawMessage) bool {
-	var value any
-	if json.Unmarshal(content, &value) != nil {
-		return true
-	}
-	var walk func(any) bool
-	walk = func(current any) bool {
-		switch typed := current.(type) {
-		case map[string]any:
-			if kind, ok := typed["type"].(string); ok && (kind == "toolCall" || kind == "toolResult") {
-				return true
-			}
-			for _, nested := range typed {
-				if walk(nested) {
-					return true
-				}
-			}
-		case []any:
-			for _, nested := range typed {
-				if walk(nested) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	return walk(value)
-}
-
-func readRPCFrames(ctx context.Context, stdout io.Reader, frames chan<- rpcFrame) {
-	defer close(frames)
-	reader := bufio.NewReaderSize(io.LimitReader(stdout, maxRPCStdoutBytes+1), 32*1024)
-	total := 0
-	for {
-		record, err := reader.ReadBytes('\n')
-		total += len(record)
-		if total > maxRPCStdoutBytes {
-			sendRPCFrame(ctx, frames, rpcFrame{err: errRPCFailure})
-			return
-		}
-		if len(record) > 0 {
-			if record[len(record)-1] != '\n' {
-				sendRPCFrame(ctx, frames, rpcFrame{err: errRPCFailure})
-				return
-			}
-			record = record[:len(record)-1]
-			if len(record) > 0 && record[len(record)-1] == '\r' {
-				record = record[:len(record)-1]
-			}
-			if len(record) == 0 {
-				sendRPCFrame(ctx, frames, rpcFrame{err: errRPCFailure})
-				return
-			}
-			if !sendRPCFrame(ctx, frames, rpcFrame{content: append([]byte(nil), record...)}) {
-				return
-			}
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) || len(record) == 0 {
-				sendRPCFrame(ctx, frames, rpcFrame{err: errRPCFailure})
-			}
-			return
-		}
-	}
-}
-
-func sendRPCFrame(ctx context.Context, frames chan<- rpcFrame, frame rpcFrame) bool {
-	select {
-	case frames <- frame:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-func monitorRPCStderr(stderr io.Reader, overflow chan<- struct{}) {
-	buffer := make([]byte, 32*1024)
-	total := 0
-	reported := false
-	for {
-		count, err := stderr.Read(buffer)
-		total += count
-		if total > maxRPCStderrBytes && !reported {
-			reported = true
-			select {
-			case overflow <- struct{}{}:
-			default:
-			}
-		}
-		if err != nil {
-			return
-		}
-	}
 }

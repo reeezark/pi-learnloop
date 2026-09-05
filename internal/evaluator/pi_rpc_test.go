@@ -1,12 +1,10 @@
 package evaluator
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,56 +17,87 @@ import (
 )
 
 func TestNewPiRPCEvaluator(t *testing.T) {
-	t.Run("resolves a symlink and freezes a supported executable", func(t *testing.T) {
+	t.Run("freezes matching Node Pi and SDK paths", func(t *testing.T) {
 		fake := installFakePi(t, "success")
 		evaluator, err := NewPiRPCEvaluator(context.Background(), prompts.EvaluatorQuestionGenerationV1())
 		if err != nil {
 			t.Fatalf("NewPiRPCEvaluator(): %v", err)
 		}
-		resolved, err := filepath.EvalSymlinks(fake.executable)
-		if err != nil {
-			t.Fatalf("EvalSymlinks(%q): %v", fake.executable, err)
+		wantPi, _ := filepath.EvalSymlinks(fake.realPi)
+		wantNode, _ := filepath.EvalSymlinks(fake.nodeExecutable)
+		if evaluator.runtime.piExecutable != wantPi || evaluator.runtime.nodeExecutable != wantNode {
+			t.Fatalf("runtime executables = (%q, %q), want frozen (%q, %q)", evaluator.runtime.piExecutable, evaluator.runtime.nodeExecutable, wantPi, wantNode)
 		}
-		if evaluator.executable != resolved {
-			t.Fatalf("executable = %q, want frozen path %q", evaluator.executable, resolved)
+		wantRoot, _ := filepath.EvalSymlinks(fake.packageRoot)
+		for _, path := range []string{evaluator.runtime.sdkEntry, evaluator.runtime.settingsEntry, evaluator.runtime.httpEntry, evaluator.runtime.attributionEntry} {
+			if !strings.HasPrefix(path, wantRoot+string(os.PathSeparator)) {
+				t.Fatalf("runtime path %q escapes package %q", path, fake.packageRoot)
+			}
 		}
 		if evaluator.systemPrompt != prompts.EvaluatorQuestionGenerationV1() {
-			t.Fatal("system prompt does not equal the released embedded asset")
+			t.Fatal("system prompt does not equal released embedded asset")
 		}
 	})
 
-	t.Run("rejects a missing executable without exposing PATH", func(t *testing.T) {
-		t.Setenv("PATH", t.TempDir())
-		_, err := NewPiRPCEvaluator(context.Background(), "safe prompt")
-		if err == nil || strings.Contains(err.Error(), os.Getenv("PATH")) {
-			t.Fatalf("NewPiRPCEvaluator() error = %v, want opaque unavailable error", err)
-		}
-	})
+	for _, test := range []struct {
+		name     string
+		scenario string
+	}{
+		{name: "missing executable", scenario: "missing_pi"},
+		{name: "missing Node", scenario: "missing_node"},
+		{name: "unsupported Pi version", scenario: "wrong_version"},
+		{name: "unsupported Node version", scenario: "wrong_node_version"},
+		{name: "mismatched package version", scenario: "wrong_package_version"},
+		{name: "missing SDK entry", scenario: "missing_sdk"},
+		{name: "SDK preflight failure", scenario: "runtime_preflight_fail"},
+	} {
+		t.Run("rejects "+test.name+" opaquely", func(t *testing.T) {
+			installFakePi(t, test.scenario)
+			_, err := NewPiRPCEvaluator(context.Background(), "safe prompt")
+			if err == nil || err.Error() != "Pi evaluator is unavailable" {
+				t.Fatalf("NewPiRPCEvaluator() error = %v, want opaque unavailable error", err)
+			}
+		})
+	}
 
-	t.Run("rejects an unsupported version", func(t *testing.T) {
-		installFakePi(t, "wrong_version")
-		_, err := NewPiRPCEvaluator(context.Background(), "safe prompt")
-		if err == nil || strings.Contains(err.Error(), "0.84.4") {
-			t.Fatalf("NewPiRPCEvaluator() error = %v, want opaque unavailable error", err)
-		}
-	})
+	for name, prompt := range map[string]string{
+		"empty":         "",
+		"invalid UTF-8": string([]byte{0xff}),
+		"oversized":     strings.Repeat("a", MaxSystemPromptBytes+1),
+	} {
+		t.Run("rejects "+name+" released prompt", func(t *testing.T) {
+			installFakePi(t, "success")
+			if _, err := NewPiRPCEvaluator(context.Background(), prompt); err == nil {
+				t.Fatal("NewPiRPCEvaluator() error = nil, want invalid prompt rejection")
+			}
+		})
+	}
+}
 
-	t.Run("rejects an invalid released prompt", func(t *testing.T) {
-		installFakePi(t, "success")
-		if _, err := NewPiRPCEvaluator(context.Background(), ""); err == nil {
-			t.Fatal("NewPiRPCEvaluator() error = nil, want invalid prompt rejection")
-		}
-	})
+func TestNewVersionedPiModelEvaluatorsShareOneFrozenPreflight(t *testing.T) {
+	fake := installFakePi(t, "success")
+	questions, assessments, err := NewVersionedPiModelEvaluators(
+		context.Background(), "question-v1", "question-v2", "assessment-v1", "assessment-v2",
+	)
+	if err != nil || questions == nil || assessments == nil {
+		t.Fatalf("NewVersionedPiModelEvaluators() = (%#v, %#v, %v)", questions, assessments, err)
+	}
+	if questions.runtime != assessments.runtime {
+		t.Fatal("question and assessment adapters did not share frozen runtime paths")
+	}
+	content, err := os.ReadFile(fake.preflightsPath)
+	if err != nil || string(content) != "preflight\n" {
+		t.Fatalf("runtime preflights = %q, want exactly one (error = %v)", content, err)
+	}
 }
 
 func TestPiRPCEvaluatorEvaluate(t *testing.T) {
 	input := syntheticRPCInput()
 	selection := syntheticModelSelection()
 
-	t.Run("uses the fixed isolated invocation and one LF-framed prompt", func(t *testing.T) {
+	t.Run("uses one isolated worker and an exact LF-framed request", func(t *testing.T) {
 		fake := installFakePi(t, "success")
-		evaluator := mustNewFakeEvaluator(t)
-		result, err := evaluator.Evaluate(context.Background(), input, selection)
+		result, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
 		if err != nil {
 			t.Fatalf("Evaluate(): %v", err)
 		}
@@ -76,93 +105,36 @@ func TestPiRPCEvaluatorEvaluate(t *testing.T) {
 			t.Fatalf("result = %#v, want three validated questions", result)
 		}
 		assertFakeProcessGone(t, fake.pidPath)
-
-		arguments := readFakeArguments(t, fake.argumentsPath)
-		wantArguments, err := BuildPiArguments(selection, prompts.EvaluatorQuestionGenerationV1())
-		if err != nil {
-			t.Fatalf("BuildPiArguments(): %v", err)
-		}
-		if strings.Join(arguments, "\x00") != strings.Join(wantArguments, "\x00") {
-			t.Fatalf("arguments = %#v, want %#v", arguments, wantArguments)
-		}
-		for _, argument := range arguments {
-			if strings.Contains(argument, "synthetic source") || strings.Contains(argument, "/private/repository") {
-				t.Fatalf("argv contains runtime evidence or a repository path: %#v", arguments)
-			}
-		}
-
-		commands := readFakeCommands(t, fake.commandsPath)
-		if len(commands) != 5 {
-			t.Fatalf("command count = %d, want exactly 5 setup/prompt/result commands", len(commands))
-		}
-		wantTypes := []string{"set_auto_retry", "set_auto_compaction", "get_commands", "prompt", "get_last_assistant_text"}
-		for index, wantType := range wantTypes {
-			if commands[index]["type"] != wantType {
-				t.Fatalf("command %d type = %#v, want %q", index, commands[index]["type"], wantType)
-			}
-		}
-		if commands[0]["enabled"] != false || commands[1]["enabled"] != false {
-			t.Fatalf("setup commands = %#v, want retry and compaction disabled", commands[:2])
-		}
-		promptMessage, ok := commands[3]["message"].(string)
-		if !ok {
-			t.Fatalf("prompt message = %#v, want string", commands[3]["message"])
+		request := readFakeWorkerRequest(t, fake.requestsPath, 1)
+		if request.Action != "evaluate" || request.SystemPrompt != prompts.EvaluatorQuestionGenerationV1() || request.Model == nil ||
+			request.Model.Provider != selection.Provider || request.Model.ID != selection.ModelID || request.Model.ThinkingLevel != selection.ThinkingLevel {
+			t.Fatalf("worker request = %#v, want exact prompt and model", request)
 		}
 		var sent Input
-		if err := json.Unmarshal([]byte(promptMessage), &sent); err != nil {
-			t.Fatalf("prompt message is not the runtime input JSON: %v", err)
+		if err := json.Unmarshal([]byte(request.Message), &sent); err != nil || sent.EvidenceBundle.Items[0].Content != "synthetic source" {
+			t.Fatalf("worker message = %#v, want exact runtime input (error = %v)", request.Message, err)
 		}
-		if sent.SchemaVersion != InputSchemaVersion || len(sent.EvidenceBundle.Items) != 1 || sent.EvidenceBundle.Items[0].Content != "synthetic source" {
-			t.Fatalf("sent input = %#v, want exact synthetic evidence input", sent)
+		arguments := readFakeArguments(t, fake.argumentsPath)
+		if len(arguments) != 3 || arguments[0] != "--input-type=module" || arguments[1] != "--eval" {
+			t.Fatalf("worker arguments = %#v, want fixed in-memory module invocation", arguments)
+		}
+		joined := strings.Join(arguments, "\x00")
+		for _, forbidden := range []string{"synthetic source", "/private/repository", selection.Provider, selection.ModelID} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("argv contains runtime input %q", forbidden)
+			}
 		}
 	})
 
-	t.Run("keeps Unicode separators inside one JSONL record", func(t *testing.T) {
-		installFakePi(t, "unicode_separator")
+	t.Run("does not enter the Pi CLI command registry", func(t *testing.T) {
+		fake := installFakePi(t, "commands_present")
 		result, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
 		if err != nil || result.Disposition != DispositionQuestions {
 			t.Fatalf("Evaluate() = (%#v, %v), want valid questions", result, err)
 		}
-	})
-
-	t.Run("rejects a mismatched response id", func(t *testing.T) {
-		fake := installFakePi(t, "wrong_id")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		assertFakeProcessGone(t, fake.pidPath)
-	})
-
-	t.Run("rejects invalid RPC JSON", func(t *testing.T) {
-		fake := installFakePi(t, "invalid_json")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		assertFakeProcessGone(t, fake.pidPath)
-	})
-
-	t.Run("rejects discovered commands before prompting", func(t *testing.T) {
-		fake := installFakePi(t, "commands_present")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		commands := readFakeCommands(t, fake.commandsPath)
-		for _, command := range commands {
-			if command["type"] == "prompt" {
-				t.Fatal("prompt was sent after discovered commands violated isolation")
-			}
+		if _, err := os.Stat(fake.commandsPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Pi CLI command registry was entered: %v", err)
 		}
-	})
-
-	t.Run("rejects a tool execution event", func(t *testing.T) {
-		fake := installFakePi(t, "tool_event")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		assertFakeProcessGone(t, fake.pidPath)
-	})
-
-	t.Run("rejects an unknown assistant update shape", func(t *testing.T) {
-		fake := installFakePi(t, "unknown_update")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		assertFakeProcessGone(t, fake.pidPath)
 	})
 
 	t.Run("maps malformed assistant text to invalid output", func(t *testing.T) {
@@ -173,42 +145,44 @@ func TestPiRPCEvaluatorEvaluate(t *testing.T) {
 		}
 	})
 
-	t.Run("does not expose an authentication failure", func(t *testing.T) {
-		installFakePi(t, "auth_failure")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		if strings.Contains(err.Error(), "credential-secret-value") {
-			t.Fatalf("Evaluate() exposed raw child output: %v", err)
-		}
-	})
+	for _, scenario := range []string{"invalid_json", "duplicate_response", "extra_frame", "unknown_response", "auth_failure", "stdout_cap", "stderr_cap", "child_exit"} {
+		t.Run("rejects worker "+scenario+" opaquely", func(t *testing.T) {
+			fake := installFakePi(t, scenario)
+			_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
+			assertOpaqueRPCFailure(t, err)
+			if strings.Contains(fmt.Sprint(err), "credential-secret-value") {
+				t.Fatalf("Evaluate() exposed raw child output: %v", err)
+			}
+			assertFakeProcessGone(t, fake.pidPath)
+		})
+	}
 
-	t.Run("rejects missing model metadata before spawning RPC", func(t *testing.T) {
+	t.Run("rejects missing model metadata before spawning", func(t *testing.T) {
 		fake := installFakePi(t, "success")
-		evaluator := mustNewFakeEvaluator(t)
 		invalid := selection
 		invalid.ModelID = ""
-		_, err := evaluator.Evaluate(context.Background(), input, invalid)
+		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, invalid)
 		if ContractErrorCodeOf(err) != ContractErrorInvalidInput {
 			t.Fatalf("Evaluate() error = %v, want invalid_input", err)
 		}
 		if _, err := os.Stat(fake.pidPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("RPC process PID file error = %v, want process not started", err)
+			t.Fatalf("worker started for invalid input: %v", err)
 		}
 	})
 
-	t.Run("honors deadline and reaps the process", func(t *testing.T) {
+	t.Run("honors a deadline and reaps the worker", func(t *testing.T) {
 		fake := installFakePi(t, "hang")
 		evaluator := mustNewFakeEvaluator(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		_, err := evaluator.Evaluate(ctx, input, selection)
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Evaluate() error = %v, want context deadline exceeded", err)
+			t.Fatalf("Evaluate() error = %v, want deadline exceeded", err)
 		}
 		assertFakeProcessGone(t, fake.pidPath)
 	})
 
-	t.Run("honors cancellation and reaps the process", func(t *testing.T) {
+	t.Run("honors cancellation and reaps the worker", func(t *testing.T) {
 		fake := installFakePi(t, "hang")
 		evaluator := mustNewFakeEvaluator(t)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -219,97 +193,118 @@ func TestPiRPCEvaluatorEvaluate(t *testing.T) {
 		}()
 		waitForFakePID(t, fake.pidPath)
 		cancel()
-		err := <-result
-		if !errors.Is(err, context.Canceled) {
+		if err := <-result; !errors.Is(err, context.Canceled) {
 			t.Fatalf("Evaluate() error = %v, want context canceled", err)
 		}
 		assertFakeProcessGone(t, fake.pidPath)
 	})
-
-	t.Run("enforces the stdout cap", func(t *testing.T) {
-		fake := installFakePi(t, "stdout_cap")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		assertFakeProcessGone(t, fake.pidPath)
-	})
-
-	t.Run("enforces the stderr cap", func(t *testing.T) {
-		fake := installFakePi(t, "stderr_cap")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		assertFakeProcessGone(t, fake.pidPath)
-	})
-
-	t.Run("reports an early child exit and reaps it", func(t *testing.T) {
-		fake := installFakePi(t, "child_exit")
-		_, err := mustNewFakeEvaluator(t).Evaluate(context.Background(), input, selection)
-		assertOpaqueRPCFailure(t, err)
-		assertFakeProcessGone(t, fake.pidPath)
-	})
 }
 
-func TestReadRPCFrames(t *testing.T) {
-	t.Run("stops reading immediately after the stdout cap", func(t *testing.T) {
-		reader := &countingByteReader{remaining: 2 * maxRPCStdoutBytes}
-		frames := make(chan rpcFrame, 1)
-		readRPCFrames(context.Background(), reader, frames)
-		frame := <-frames
-		if frame.err == nil {
-			t.Fatal("readRPCFrames() error = nil, want stdout cap failure")
-		}
-		if reader.read > maxRPCStdoutBytes+1 {
-			t.Fatalf("readRPCFrames() consumed %d bytes, want at most %d", reader.read, maxRPCStdoutBytes+1)
-		}
-	})
+func TestRunModelWorkerRejectsOversizedPrivateRequestBeforeSpawning(t *testing.T) {
+	fake := installFakePi(t, "success")
+	evaluator := mustNewFakeEvaluator(t)
+	_, err := runModelWorker(context.Background(), evaluator.runtime, workerRequest{
+		SchemaVersion: workerSchemaVersion,
+		Action:        "evaluate",
+		Message:       strings.Repeat("x", maxWorkerRequestBytes),
+	}, time.Second)
+	assertOpaqueRPCFailure(t, err)
+	if _, err := os.Stat(fake.pidPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversized request started a worker: %v", err)
+	}
 }
 
-func TestPiRPCHelperProcess(t *testing.T) {
-	if os.Getenv("PI_LEARNLOOP_FAKE_RPC") != "1" {
+func TestPiModelWorkerHelperProcess(t *testing.T) {
+	if os.Getenv("PI_LEARNLOOP_FAKE_WORKER") != "1" {
 		return
 	}
-	os.Exit(runFakePiProcess(fakeProcessArguments()))
+	os.Exit(runFakeWorker())
 }
 
 type fakePi struct {
-	executable    string
-	argumentsPath string
-	commandsPath  string
-	pidPath       string
-	startsPath    string
+	packageRoot    string
+	realPi         string
+	nodeExecutable string
+	argumentsPath  string
+	requestsPath   string
+	commandsPath   string
+	pidPath        string
+	startsPath     string
+	preflightsPath string
 }
 
 func installFakePi(t *testing.T, scenario string) fakePi {
 	t.Helper()
-	realDirectory := t.TempDir()
+	packageRoot := t.TempDir()
 	binDirectory := t.TempDir()
-	realExecutable := filepath.Join(realDirectory, "pi-real")
-	version := SupportedPiVersion
-	if scenario == "wrong_version" {
-		version = "0.84.4"
-	}
-	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%%s\\n' %q; exit 0; fi\nexec %q -test.run '^TestPiRPCHelperProcess$' -- \"$@\"\n", version, os.Args[0])
-	if err := os.WriteFile(realExecutable, []byte(script), 0o700); err != nil {
-		t.Fatalf("WriteFile(fake Pi): %v", err)
-	}
-	executable := filepath.Join(binDirectory, "pi")
-	if err := os.Symlink(realExecutable, executable); err != nil {
-		t.Fatalf("Symlink(fake Pi): %v", err)
-	}
 	recordDirectory := t.TempDir()
+	for _, relative := range []string{
+		"dist/bundle/cli.js", "dist/index.js", "dist/core/settings-manager.js",
+		"dist/core/http-dispatcher.js", "dist/core/provider-attribution.js",
+	} {
+		if scenario == "missing_sdk" && relative == "dist/index.js" {
+			continue
+		}
+		path := filepath.Join(packageRoot, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		mode := os.FileMode(0o600)
+		content := "export {};\n"
+		if relative == "dist/bundle/cli.js" {
+			mode = 0o700
+			version := SupportedPiVersion
+			if scenario == "wrong_version" {
+				version = "0.84.4"
+			}
+			content = fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q\n", version)
+		}
+		if err := os.WriteFile(path, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	packageVersion := SupportedPiVersion
+	if scenario == "wrong_package_version" {
+		packageVersion = "0.84.4"
+	}
+	manifest := fmt.Sprintf(`{"name":"@earendil-works/pi-coding-agent","version":%q,"type":"module","main":"./dist/index.js","bin":{"pi":"./dist/bundle/cli.js"}}`, packageVersion)
+	if err := os.WriteFile(filepath.Join(packageRoot, "package.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	realPi := filepath.Join(packageRoot, "dist/bundle/cli.js")
+	if scenario != "missing_pi" {
+		if err := os.Symlink(realPi, filepath.Join(binDirectory, "pi")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nodeVersion := "v22.19.0"
+	if scenario == "wrong_node_version" {
+		nodeVersion = "v22.18.0"
+	}
+	nodeExecutable := filepath.Join(binDirectory, "node")
+	nodeScript := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%%s\\n' %q; exit 0; fi\nexec %q -test.run '^TestPiModelWorkerHelperProcess$' -- \"$@\"\n", nodeVersion, os.Args[0])
+	if scenario != "missing_node" {
+		if err := os.WriteFile(nodeExecutable, []byte(nodeScript), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	fake := fakePi{
-		executable:    executable,
-		argumentsPath: filepath.Join(recordDirectory, "arguments.json"),
-		commandsPath:  filepath.Join(recordDirectory, "commands.jsonl"),
-		pidPath:       filepath.Join(recordDirectory, "pid"),
-		startsPath:    filepath.Join(recordDirectory, "starts"),
+		packageRoot: packageRoot, realPi: realPi, nodeExecutable: nodeExecutable,
+		argumentsPath:  filepath.Join(recordDirectory, "arguments.json"),
+		requestsPath:   filepath.Join(recordDirectory, "requests.jsonl"),
+		commandsPath:   filepath.Join(recordDirectory, "commands.jsonl"),
+		pidPath:        filepath.Join(recordDirectory, "pid"),
+		startsPath:     filepath.Join(recordDirectory, "starts"),
+		preflightsPath: filepath.Join(recordDirectory, "preflights"),
 	}
 	t.Setenv("PATH", binDirectory)
-	t.Setenv("PI_LEARNLOOP_FAKE_RPC", "1")
+	t.Setenv("PI_LEARNLOOP_FAKE_WORKER", "1")
 	t.Setenv("PI_LEARNLOOP_FAKE_SCENARIO", scenario)
 	t.Setenv("PI_LEARNLOOP_FAKE_ARGUMENTS", fake.argumentsPath)
-	t.Setenv("PI_LEARNLOOP_FAKE_COMMANDS", fake.commandsPath)
+	t.Setenv("PI_LEARNLOOP_FAKE_REQUESTS", fake.requestsPath)
 	t.Setenv("PI_LEARNLOOP_FAKE_PID", fake.pidPath)
 	t.Setenv("PI_LEARNLOOP_FAKE_STARTS", fake.startsPath)
+	t.Setenv("PI_LEARNLOOP_FAKE_PREFLIGHTS", fake.preflightsPath)
 	return fake
 }
 
@@ -322,118 +317,83 @@ func mustNewFakeEvaluator(t *testing.T) *PiRPCEvaluator {
 	return evaluator
 }
 
-func runFakePiProcess(arguments []string) int {
-	scenario := os.Getenv("PI_LEARNLOOP_FAKE_SCENARIO")
-	if len(arguments) == 1 && arguments[0] == "--version" {
-		if scenario == "wrong_version" {
-			fmt.Fprintln(os.Stdout, "0.84.4")
-		} else {
-			fmt.Fprintln(os.Stdout, SupportedPiVersion)
-		}
-		return 0
-	}
-	if err := appendFakeStart(); err != nil {
+func runFakeWorker() int {
+	arguments := fakeProcessArguments()
+	content, err := os.ReadFile("/dev/stdin")
+	if err != nil || len(content) == 0 || content[len(content)-1] != '\n' {
 		return 90
 	}
-	if err := os.WriteFile(os.Getenv("PI_LEARNLOOP_FAKE_PID"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+	var request workerRequest
+	if json.Unmarshal(content[:len(content)-1], &request) != nil {
 		return 91
+	}
+	scenario := os.Getenv("PI_LEARNLOOP_FAKE_SCENARIO")
+	if request.Action == "preflight" {
+		file, err := os.OpenFile(os.Getenv("PI_LEARNLOOP_FAKE_PREFLIGHTS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return 97
+		}
+		_, err = fmt.Fprintln(file, "preflight")
+		_ = file.Close()
+		if err != nil {
+			return 98
+		}
+		if scenario == "runtime_preflight_fail" {
+			writeFakeJSON(map[string]any{"schema_version": workerSchemaVersion, "status": "error", "code": "runtime_failed"})
+			return 1
+		}
+		writeFakeJSON(map[string]any{"schema_version": workerSchemaVersion, "status": "ready"})
+		return 0
+	}
+	if err := os.WriteFile(os.Getenv("PI_LEARNLOOP_FAKE_PID"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		return 92
+	}
+	if err := appendFakeStart(); err != nil {
+		return 93
 	}
 	encodedArguments, _ := json.Marshal(arguments)
 	if err := os.WriteFile(os.Getenv("PI_LEARNLOOP_FAKE_ARGUMENTS"), encodedArguments, 0o600); err != nil {
-		return 92
+		return 94
 	}
-
+	file, err := os.OpenFile(os.Getenv("PI_LEARNLOOP_FAKE_REQUESTS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 95
+	}
+	_, writeErr := file.Write(content)
+	_ = file.Close()
+	if writeErr != nil {
+		return 96
+	}
 	switch scenario {
 	case "hang":
 		time.Sleep(time.Hour)
 	case "stderr_cap":
 		_, _ = os.Stderr.Write([]byte(strings.Repeat("s", maxRPCStderrBytes+1)))
-		time.Sleep(time.Hour)
+	case "stdout_cap":
+		_, _ = os.Stdout.Write([]byte(strings.Repeat("x", maxRPCStdoutBytes+1)))
 	case "child_exit":
 		return 17
+	case "invalid_json":
+		fmt.Fprintln(os.Stdout, "{not-json}")
+		return 0
+	case "duplicate_response":
+		fmt.Fprintf(os.Stdout, `{"schema_version":1,"status":"ok","status":"ok","text":%q}`+"\n", syntheticQuestionSetJSON())
+		return 0
+	case "extra_frame":
+		writeFakeJSON(map[string]any{"schema_version": workerSchemaVersion, "status": "ok", "text": syntheticQuestionSetJSON()})
+		writeFakeJSON(map[string]any{"schema_version": workerSchemaVersion, "status": "ok", "text": syntheticQuestionSetJSON()})
+		return 0
+	case "unknown_response":
+		writeFakeJSON(map[string]any{"schema_version": workerSchemaVersion, "status": "ok", "text": syntheticQuestionSetJSON(), "extra": true})
+		return 0
+	case "auth_failure":
+		fmt.Fprintln(os.Stderr, "credential-secret-value")
+		writeFakeJSON(map[string]any{"schema_version": workerSchemaVersion, "status": "error", "code": "runtime_failed"})
+		return 1
 	}
-
-	lastAssistantText := syntheticQuestionSetJSON()
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return 0
-		}
-		if !strings.HasSuffix(line, "\n") || strings.HasSuffix(line, "\r\n") {
-			return 93
-		}
-		line = strings.TrimSuffix(line, "\n")
-		if err := appendFakeCommand(line); err != nil {
-			return 94
-		}
-		if scenario == "stdout_cap" {
-			_, _ = os.Stdout.Write([]byte(strings.Repeat("x", maxRPCStdoutBytes+1) + "\n"))
-			time.Sleep(time.Hour)
-		}
-		if scenario == "invalid_json" {
-			fmt.Fprintln(os.Stdout, "{not-json}")
-			time.Sleep(time.Hour)
-		}
-
-		var command map[string]any
-		if json.Unmarshal([]byte(line), &command) != nil {
-			return 95
-		}
-		kind, _ := command["type"].(string)
-		id, _ := command["id"].(string)
-		switch kind {
-		case "set_auto_retry", "set_auto_compaction":
-			if scenario == "wrong_id" && kind == "set_auto_retry" {
-				id = "wrong-id"
-			}
-			writeFakeJSON(map[string]any{"id": id, "type": "response", "command": kind, "success": true})
-		case "get_commands":
-			commands := []any{}
-			if scenario == "commands_present" {
-				commands = []any{map[string]any{"name": "unsafe", "source": "extension"}}
-			}
-			writeFakeJSON(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"commands": commands}})
-		case "prompt":
-			if scenario == "auth_failure" {
-				writeFakeJSON(map[string]any{"id": id, "type": "response", "command": kind, "success": false, "error": "credential-secret-value"})
-				time.Sleep(time.Hour)
-			}
-			writeFakeJSON(map[string]any{"id": id, "type": "response", "command": kind, "success": true})
-			message, _ := command["message"].(string)
-			lastAssistantText = fakeAssistantText(scenario, message)
-			writeFakeJSON(map[string]any{"type": "agent_start"})
-			writeFakeJSON(map[string]any{"type": "message_update", "assistantMessageEvent": map[string]any{"type": "start"}})
-			switch scenario {
-			case "tool_event":
-				writeFakeJSON(map[string]any{"type": "tool_execution_start", "toolCallId": "call-1", "toolName": "bash", "args": map[string]any{}})
-			case "unknown_update":
-				writeFakeJSON(map[string]any{"type": "message_update", "assistantMessageEvent": map[string]any{"type": "credential_event"}})
-			case "unicode_separator":
-				fmt.Fprintf(os.Stdout, "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"left%sright\"}}\n", "\u2028")
-			}
-			writeFakeJSON(map[string]any{
-				"type": "message_update",
-				"assistantMessageEvent": map[string]any{
-					"type":   "done",
-					"reason": "stop",
-					"message": map[string]any{
-						"role":    "assistant",
-						"content": []any{map[string]any{"type": "text", "text": lastAssistantText}},
-					},
-				},
-			})
-			writeFakeJSON(map[string]any{"type": "agent_settled"})
-		case "get_last_assistant_text":
-			text := lastAssistantText
-			if scenario == "invalid_output" {
-				text = "not-json"
-			}
-			writeFakeJSON(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"text": text}})
-		default:
-			return 96
-		}
-	}
+	text := fakeAssistantText(scenario, request.Message)
+	writeFakeJSON(map[string]any{"schema_version": workerSchemaVersion, "status": "ok", "text": text})
+	return 0
 }
 
 func fakeAssistantText(scenario, message string) string {
@@ -443,6 +403,9 @@ func fakeAssistantText(scenario, message string) string {
 	}
 	var stage AssessmentStage
 	if raw, exists := envelope["stage"]; !exists || json.Unmarshal(raw, &stage) != nil {
+		if scenario == "invalid_output" {
+			return "not-json"
+		}
 		return syntheticQuestionSetJSON()
 	}
 	switch scenario {
@@ -473,16 +436,6 @@ func fakeProcessArguments() []string {
 	return nil
 }
 
-func appendFakeCommand(line string) error {
-	file, err := os.OpenFile(os.Getenv("PI_LEARNLOOP_FAKE_COMMANDS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = fmt.Fprintln(file, line)
-	return err
-}
-
 func appendFakeStart() error {
 	file, err := os.OpenFile(os.Getenv("PI_LEARNLOOP_FAKE_STARTS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -498,21 +451,13 @@ func writeFakeJSON(value any) {
 }
 
 func syntheticRPCInput() Input {
-	return Input{
-		SchemaVersion: InputSchemaVersion,
-		EvidenceBundle: EvidenceBundle{
-			Items: []EvidenceItem{{Reference: "E001", Content: "synthetic source"}},
-		},
-	}
+	return Input{SchemaVersion: InputSchemaVersion, EvidenceBundle: EvidenceBundle{
+		Items: []EvidenceItem{{Reference: "E001", Content: "synthetic source"}},
+	}}
 }
 
 func syntheticModelSelection() ModelSelection {
-	return ModelSelection{
-		PiVersion:     SupportedPiVersion,
-		Provider:      "synthetic-provider",
-		ModelID:       "synthetic-model",
-		ThinkingLevel: "off",
-	}
+	return ModelSelection{PiVersion: SupportedPiVersion, Provider: "synthetic-provider", ModelID: "synthetic-model", ThinkingLevel: "off"}
 }
 
 func syntheticQuestionSetJSON() string {
@@ -540,26 +485,27 @@ func readFakeArguments(t *testing.T, path string) []string {
 	return arguments
 }
 
-func readFakeCommands(t *testing.T, path string) []map[string]any {
+func readFakeWorkerRequest(t *testing.T, path string, count int) workerRequest {
 	t.Helper()
 	content, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("ReadFile(commands): %v", err)
+		t.Fatalf("ReadFile(requests): %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-	commands := make([]map[string]any, len(lines))
-	for index, line := range lines {
-		if err := json.Unmarshal([]byte(line), &commands[index]); err != nil {
-			t.Fatalf("Unmarshal(command %d): %v", index, err)
-		}
+	if len(lines) != count {
+		t.Fatalf("worker request count = %d, want %d", len(lines), count)
 	}
-	return commands
+	var request workerRequest
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &request); err != nil {
+		t.Fatalf("Unmarshal(worker request): %v", err)
+	}
+	return request
 }
 
 func assertOpaqueRPCFailure(t *testing.T, err error) {
 	t.Helper()
 	if !errors.Is(err, errRPCFailure) || err.Error() != errRPCFailure.Error() {
-		t.Fatalf("error = %v, want opaque RPC failure", err)
+		t.Fatalf("error = %v, want opaque runtime failure", err)
 	}
 }
 
@@ -577,7 +523,7 @@ func assertFakeProcessGone(t *testing.T, pidPath string) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("fake Pi process %d is still alive", pid)
+	t.Fatalf("fake worker process %d is still alive", pid)
 }
 
 func waitForFakePID(t *testing.T, pidPath string) []byte {
@@ -590,27 +536,6 @@ func waitForFakePID(t *testing.T, pidPath string) []byte {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("fake Pi PID %q was not published", pidPath)
+	t.Fatalf("fake worker PID %q was not published", pidPath)
 	return nil
-}
-
-type countingByteReader struct {
-	remaining int
-	read      int
-}
-
-func (reader *countingByteReader) Read(content []byte) (int, error) {
-	if reader.remaining == 0 {
-		return 0, io.EOF
-	}
-	count := len(content)
-	if count > reader.remaining {
-		count = reader.remaining
-	}
-	for index := 0; index < count; index++ {
-		content[index] = 'x'
-	}
-	reader.remaining -= count
-	reader.read += count
-	return count, nil
 }

@@ -18,7 +18,7 @@ Every evaluator adapter must follow this sequence:
 4. Record versions, hashes, decisions, and privacy flags using `schemas/run-record.schema.json`.
 5. Run `scripts/validate-agent-infra.sh`.
 
-The question-generation and answer-assessment seams each have a narrow deterministic test adapter and a production isolated Pi RPC adapter. The two production adapters share only private process-isolation mechanics and never retain a Pi process across human input.
+The question-generation and answer-assessment seams each have a narrow deterministic test adapter and a production isolated Pi `ModelRuntime` adapter. They share only private discovery/framing mechanics, start a fresh embedded Node worker for every turn, and never create or retain a Pi AgentSession across human input.
 
 ## Authoritative Assets
 
@@ -50,7 +50,7 @@ intentionally distinct from development eval-case and run-record schemas.
 - Raw source code and credentials are not persisted in run records.
 - Released asset versions are immutable. Change behavior by adding a new version and preserving fixtures for the old version.
 - Pi Session identifiers and repository roots remain outside bundles, evaluator
-  inputs, prompts, RPC content, and generic history output.
+  inputs, prompts, model-worker content, and generic history output.
 - Development schemas do not become runtime product protocols without an explicit compatibility review.
 - Runtime question output is accepted only after deterministic shape, size, UTF-8, duplicate-key, and evidence-reference validation.
 - Runtime assessment output permits one F1 only at the initial stage or exactly three ordered verdicts; the public label is derived deterministically in Go.

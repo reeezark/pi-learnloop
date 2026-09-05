@@ -575,12 +575,13 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", li
     const modelDescription = `${displayInline(evaluatorSelection.provider)}/${displayInline(evaluatorSelection.id)} (thinking=${evaluatorSelection.thinking_level})`;
     const confirmed = await context.ui.confirm(
       "Generate learning questions?",
-      `Model: ${modelDescription}. One evaluation will send the changed Go file/declaration metadata and excerpts, selected-snapshot Go context items and metadata, relationships, build configuration, limits, completeness, omissions, and truncation shown above. Estimated repository-derived evidence is ${disclosedEvidenceBytes} bytes; the complete evaluator input is capped at ${response.preview.go_context.applied_limits.max_evaluator_input_bytes} bytes. Pi LearnLoop does not know this provider's price, so the call may incur provider cost, and Pi/provider transport may retry transient network failures according to your Pi configuration. Continue?`,
+      `Model: ${modelDescription}. One evaluation will send the changed Go file/declaration metadata and excerpts, selected-snapshot Go context items and metadata, relationships, build configuration, limits, completeness, omissions, and truncation shown above. Estimated repository-derived evidence is ${disclosedEvidenceBytes} bytes; the complete evaluator input is capped at ${response.preview.go_context.applied_limits.max_evaluator_input_bytes} bytes. Pi LearnLoop does not know this provider's price, so the call may incur provider cost. Pi LearnLoop configures zero model retries. Continue?`,
     );
     if (!confirmed) {
       return;
     }
 
+    let evaluationStage: "question" | "assessment" = "question";
     try {
       const questionSet = await client.questions(response.continuation.id, evaluatorSelection);
       context.ui.notify(formatQuestionSet(questionSet), questionSet.disposition === "questions" ? "info" : "warning");
@@ -608,12 +609,13 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", li
       }
       const assessConfirmed = await context.ui.confirm(
         "Assess these answers?",
-        `Model: ${modelDescription}. One evaluation will resend the same ${disclosedEvidenceBytes} bytes of displayed repository-derived evidence together with your three answers. Pi LearnLoop does not know this provider's price, so the call may incur provider cost. If one follow-up is needed, submitting its answer causes one additional evaluation, and Pi/provider transport may retry according to your Pi configuration. Continue?`,
+        `Model: ${modelDescription}. One evaluation will resend the same ${disclosedEvidenceBytes} bytes of displayed repository-derived evidence together with your three answers. Pi LearnLoop does not know this provider's price, so the call may incur provider cost. If one follow-up is needed, submitting its answer causes one additional evaluation. Pi LearnLoop configures zero model retries. Continue?`,
       );
       if (!assessConfirmed) {
         return;
       }
 
+      evaluationStage = "assessment";
       let assessment = await client.assess(questionSet.assessment.id, {
         stage: "initial_answers",
         answers,
@@ -643,26 +645,7 @@ export function createLearnCommand(client: LearnClient, piVersion = "0.84.3", li
         context.ui.notify("The assessment completed, but local learning history could not be saved.", "warning");
       }
     } catch (error) {
-      if (error instanceof EvidenceClientError && error.code === "continuation_unavailable") {
-        context.ui.notify("This evidence preview expired or was already used. Run /learn again to review a new preview.", "warning");
-        return;
-      }
-      if (error instanceof EvidenceClientError && error.code === "evaluator_unavailable") {
-        context.ui.notify("The question evaluator is unavailable. Run /learn again after it is ready.", "error");
-        return;
-      }
-      if (error instanceof EvidenceClientError && error.code === "assessment_unavailable") {
-        context.ui.notify("This assessment expired or was already submitted. Run /learn again to start a new assessment.", "warning");
-        return;
-      }
-      if (error instanceof EvidenceClientError && error.code === "invalid_request") {
-        context.ui.notify(
-          "Pi LearnLoop daemon rejected this request. Update the daemon and extension together, then run /learn again. The extension did not retry or alter an answer.",
-          "error",
-        );
-        return;
-      }
-      context.ui.notify("Pi LearnLoop could not generate learning questions. Run /learn again.", "error");
+      notifyEvaluationError(error, evaluationStage, context);
     }
   };
 }
@@ -841,6 +824,59 @@ function assessmentUnavailableMessage(reason: "capacity" | "evaluator_unavailabl
   return reason === "capacity"
     ? "The questions are ready, but the daemon has too many pending assessments. Run /learn again shortly."
     : "The questions are ready, but answer assessment is not available yet.";
+}
+
+function notifyEvaluationError(
+  error: unknown,
+  stage: "question" | "assessment",
+  context: LearnCommandContext,
+): void {
+  const subject = stage === "question" ? "Question generation" : "Answer assessment";
+  const responseKind = stage === "question" ? "question-generation" : "assessment";
+  if (error instanceof EvidenceClientError && error.code === "continuation_unavailable" && stage === "question") {
+    context.ui.notify("Question generation did not start because this evidence preview expired or was already used. The request was not retried. Run /learn again to review a new preview.", "warning");
+    return;
+  }
+  if (error instanceof EvidenceClientError && error.code === "assessment_unavailable" && stage === "assessment") {
+    context.ui.notify("Answer assessment did not start because this assessment expired or was already submitted. The request was not retried. Run /learn again to start a new assessment.", "warning");
+    return;
+  }
+  if (error instanceof EvidenceClientError) {
+    switch (error.code) {
+      case "evaluator_unavailable":
+        context.ui.notify(`${subject} could not start because the Pi model runtime is unavailable. Initialization may have failed before any provider request. Verify the foreground daemon uses Pi 0.84.3 and Node 22.19.0 or newer, restart it, then run /learn again. The request was not retried.`, "error");
+        return;
+      case "evaluator_failed":
+        context.ui.notify(`${subject} failed. The provider may or may not have received the request. The request was not retried; run /learn again to start a new review.`, "error");
+        return;
+      case "evaluator_timeout":
+        context.ui.notify(`${subject} timed out. The provider may still have received the request. The request was not retried; run /learn again to start a new review.`, "error");
+        return;
+      case "evaluator_invalid_output":
+        context.ui.notify(`${subject} returned output that Pi LearnLoop could not safely accept. The request was not retried; run /learn again to start a new review.`, "error");
+        return;
+      case "daemon_unavailable":
+      case "daemon_changed":
+        context.ui.notify(`The local daemon connection was lost during ${subject.toLowerCase()}. The outcome is unknown, and the request was not retried. Restart the foreground daemon, then run /learn again.`, "error");
+        return;
+      case "protocol_mismatch":
+      case "continuation_unavailable":
+      case "assessment_unavailable":
+        context.ui.notify(`The daemon returned an incompatible ${responseKind} response. Update the daemon and extension together. The request was not retried; run /learn again.`, "error");
+        return;
+      case "invalid_runtime_state":
+      case "unauthorized":
+        context.ui.notify(`The local daemon runtime state changed during ${subject.toLowerCase()}. Restart the foreground daemon. The request was not retried; run /learn again.`, "error");
+        return;
+      case "invalid_request":
+        context.ui.notify(
+          `Pi LearnLoop daemon rejected the ${stage} request. Update the daemon and extension together, then run /learn again. The extension did not retry or alter an answer.`,
+          "error",
+        );
+        return;
+    }
+  }
+  context.ui.notify(`${subject} failed for an unknown local reason. The request was not retried; run /learn again.`, "error");
 }
 
 export function formatQuestionSet(questionSet: QuestionSet): string {

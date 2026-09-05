@@ -2,7 +2,6 @@ package evaluator
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/reeezark/pi-learnloop/agent/prompts"
@@ -54,13 +53,9 @@ func TestVersionedPiRPCEvaluatorUsesV2PromptForV2Input(t *testing.T) {
 	if _, err := questions.Evaluate(context.Background(), input, syntheticModelSelection()); err != nil {
 		t.Fatalf("Evaluate(v2): %v", err)
 	}
-	arguments := readFakeArguments(t, fake.argumentsPath)
-	want, err := BuildPiArguments(syntheticModelSelection(), prompts.EvaluatorQuestionGenerationV2())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(arguments, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("v2 arguments = %#v, want v2 prompt arguments %#v", arguments, want)
+	request := readFakeWorkerRequest(t, fake.requestsPath, 1)
+	if request.SystemPrompt != prompts.EvaluatorQuestionGenerationV2() {
+		t.Fatal("v2 worker prompt does not equal released v2 prompt")
 	}
 }
 

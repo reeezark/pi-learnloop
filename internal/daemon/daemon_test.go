@@ -1,7 +1,6 @@
 package daemon_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -183,15 +182,9 @@ func TestRunRejectsRelativeTestDataDirectory(t *testing.T) {
 
 func TestRunPublishesDiscoveryOnlyAfterEvaluatorPreflight(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "runtime")
-	binDirectory := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "preflight-started")
-	fakePi := filepath.Join(binDirectory, "pi")
-	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  : > \"$PI_LEARNLOOP_PREFLIGHT_MARKER\"\n  sleep 1\n  printf '0.84.3\\n'\n  exit 0\nfi\nexit 17\n"
-	if err := os.WriteFile(fakePi, []byte(script), 0o700); err != nil {
-		t.Fatalf("WriteFile(fake Pi): %v", err)
-	}
-	t.Setenv("PATH", binDirectory)
 	t.Setenv("PI_LEARNLOOP_PREFLIGHT_MARKER", marker)
+	installDaemonFakePi(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -798,9 +791,19 @@ func TestDaemonPiHelperProcess(t *testing.T) {
 	if os.Getenv("PI_LEARNLOOP_DAEMON_FAKE_PI") != "1" {
 		return
 	}
-	arguments := argumentsAfterDoubleDash(os.Args)
-	if len(arguments) == 1 && arguments[0] == "--version" {
-		fmt.Fprintln(os.Stdout, "0.84.3")
+	content, err := io.ReadAll(os.Stdin)
+	if err != nil || len(content) == 0 || content[len(content)-1] != '\n' {
+		os.Exit(90)
+	}
+	var request struct {
+		Action  string `json:"action"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(content[:len(content)-1], &request) != nil {
+		os.Exit(91)
+	}
+	if request.Action == "preflight" {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "status": "ready"})
 		os.Exit(0)
 	}
 	if marker := os.Getenv("PI_LEARNLOOP_EVALUATOR_MARKER"); marker != "" {
@@ -808,63 +811,51 @@ func TestDaemonPiHelperProcess(t *testing.T) {
 			os.Exit(93)
 		}
 	}
-
 	lastAssistantText := `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"What behavior changed?","evidence_references":["E001"]},{"id":"Q2","kind":"code_specific","text":"Which boundary matters?","evidence_references":["E001"]},{"id":"Q3","kind":"go_backend","text":"How would a Go test cover this?","evidence_references":[]}]}`
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			os.Exit(0)
-		}
-		var command map[string]any
-		if json.Unmarshal(line, &command) != nil {
-			os.Exit(91)
-		}
-		id, _ := command["id"].(string)
-		kind, _ := command["type"].(string)
-		switch kind {
-		case "set_auto_retry", "set_auto_compaction", "prompt":
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true})
-			if kind == "prompt" {
-				message, _ := command["message"].(string)
-				var envelope map[string]json.RawMessage
-				if json.Unmarshal([]byte(message), &envelope) == nil {
-					if _, isAssessment := envelope["stage"]; isAssessment {
-						lastAssistantText = `{"schema_version":1,"disposition":"complete","follow_up":null,"evaluations":[{"question_id":"Q1","verdict":"demonstrated","feedback":"The answer identifies the selected behavior.","evidence_references":["E001"]},{"question_id":"Q2","verdict":"partial","feedback":"The answer omits one selected edge path.","evidence_references":["E001"]},{"question_id":"Q3","verdict":"not_demonstrated","feedback":"The answer needs a clearer testing explanation.","evidence_references":[]}]}`
-					}
-				}
-				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "agent_start"})
-				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "agent_settled"})
-			}
-		case "get_commands":
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"commands": []any{}}})
-		case "get_last_assistant_text":
-			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": map[string]any{"text": lastAssistantText}})
-		default:
-			os.Exit(92)
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal([]byte(request.Message), &envelope) == nil {
+		if _, isAssessment := envelope["stage"]; isAssessment {
+			lastAssistantText = `{"schema_version":1,"disposition":"complete","follow_up":null,"evaluations":[{"question_id":"Q1","verdict":"demonstrated","feedback":"The answer identifies the selected behavior.","evidence_references":["E001"]},{"question_id":"Q2","verdict":"partial","feedback":"The answer omits one selected edge path.","evidence_references":["E001"]},{"question_id":"Q3","verdict":"not_demonstrated","feedback":"The answer needs a clearer testing explanation.","evidence_references":[]}]}`
 		}
 	}
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "status": "ok", "text": lastAssistantText})
+	os.Exit(0)
 }
 
 func installDaemonFakePi(t *testing.T) {
 	t.Helper()
 	binDirectory := t.TempDir()
-	fakePi := filepath.Join(binDirectory, "pi")
-	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '0.84.3\\n'; exit 0; fi\nexec %q -test.run '^TestDaemonPiHelperProcess$' -- \"$@\"\n", os.Args[0])
-	if err := os.WriteFile(fakePi, []byte(script), 0o700); err != nil {
-		t.Fatalf("WriteFile(fake Pi): %v", err)
+	packageRoot := t.TempDir()
+	for _, relative := range []string{"dist/index.js", "dist/core/settings-manager.js", "dist/core/http-dispatcher.js", "dist/core/provider-attribution.js"} {
+		path := filepath.Join(packageRoot, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("export {};\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	realPi := filepath.Join(packageRoot, "dist/bundle/cli.js")
+	if err := os.MkdirAll(filepath.Dir(realPi), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	piScript := "#!/bin/sh\nif [ -n \"${PI_LEARNLOOP_PREFLIGHT_MARKER:-}\" ]; then : > \"$PI_LEARNLOOP_PREFLIGHT_MARKER\"; sleep 1; fi\nprintf '0.84.3\\n'\n"
+	if err := os.WriteFile(realPi, []byte(piScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"@earendil-works/pi-coding-agent","version":"0.84.3","type":"module","main":"./dist/index.js","bin":{"pi":"./dist/bundle/cli.js"}}`
+	if err := os.WriteFile(filepath.Join(packageRoot, "package.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realPi, filepath.Join(binDirectory, "pi")); err != nil {
+		t.Fatal(err)
+	}
+	nodeScript := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'v22.19.0\\n'; exit 0; fi\nexec %q -test.run '^TestDaemonPiHelperProcess$' -- \"$@\"\n", os.Args[0])
+	if err := os.WriteFile(filepath.Join(binDirectory, "node"), []byte(nodeScript), 0o700); err != nil {
+		t.Fatal(err)
 	}
 	t.Setenv("PI_LEARNLOOP_DAEMON_FAKE_PI", "1")
 	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-func argumentsAfterDoubleDash(arguments []string) []string {
-	for index, argument := range arguments {
-		if argument == "--" {
-			return arguments[index+1:]
-		}
-	}
-	return nil
 }
 
 func (running *runningDaemon) stop() {

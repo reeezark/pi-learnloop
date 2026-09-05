@@ -573,7 +573,7 @@ test("declining after the visible preview never sends a continuation request", a
   assert.match(confirmations[0]?.message ?? "", /complete evaluator input is capped at 262144 bytes/);
   assert.match(confirmations[0]?.message ?? "", /Model: anthropic\/claude-test \(thinking=off\)/);
   assert.match(confirmations[0]?.message ?? "", /provider cost/);
-  assert.match(confirmations[0]?.message ?? "", /transport may retry/);
+  assert.match(confirmations[0]?.message ?? "", /configures zero model retries/);
   assert.match(notifications[0] ?? "", /Enriched evidence preview/);
 });
 
@@ -731,6 +731,7 @@ test("collects reviewable multiline answers, discloses editor limits, and render
   assert.match(confirmations[1]?.message ?? "", /Declining sends no answer/);
   assert.match(confirmations[2]?.message ?? "", /same 31 bytes of displayed repository-derived evidence together with your three answers/);
   assert.match(confirmations[2]?.message ?? "", /one additional evaluation/);
+  assert.match(confirmations[2]?.message ?? "", /configures zero model retries/);
   assert.match(notifications.at(-1) ?? "", /Learning assessment: partial/);
   assert.match(notifications.at(-1) ?? "", /Q1 — demonstrated/);
 });
@@ -960,6 +961,104 @@ test("an old daemon invalid_request fails closed without retry or answer disclos
   assert.match(notifications.at(-1) ?? "", /Update the daemon and extension together/);
   assert.match(notifications.at(-1) ?? "", /did not retry or alter an answer/);
   assert.doesNotMatch(JSON.stringify(notifications), /private multiline|old daemon rejected/);
+});
+
+test("reports an assessment timeout as an assessment-stage failure without retry", async () => {
+  const notifications: string[] = [];
+  let assessmentRequests = 0;
+  const client: LearnClient = {
+    async preview() { return continuablePreview(); },
+    async questions() { return assessableQuestions(); },
+    async assess() {
+      assessmentRequests += 1;
+      throw new EvidenceClientError("evaluator_timeout", "private provider timeout detail");
+    },
+  };
+
+  await createLearnCommand(client, "0.84.3")("", assessmentContext(
+    ["HEAD", "first", "second", "third"],
+    [],
+    notifications,
+  ));
+
+  assert.equal(assessmentRequests, 1);
+  assert.match(notifications.at(-1) ?? "", /answer assessment timed out/i);
+  assert.match(notifications.at(-1) ?? "", /was not retried/i);
+  assert.doesNotMatch(notifications.at(-1) ?? "", /generate learning questions/i);
+  assert.doesNotMatch(JSON.stringify(notifications), /private provider timeout detail/);
+});
+
+test("maps safe question-stage failures to actionable messages without retrying", async (t) => {
+  const cases: Array<{ code: EvidenceClientError["code"]; message: RegExp }> = [
+    { code: "evaluator_unavailable", message: /question generation.*runtime is unavailable.*before any provider request/is },
+    { code: "evaluator_failed", message: /question generation failed/is },
+    { code: "evaluator_timeout", message: /question generation timed out/is },
+    { code: "evaluator_invalid_output", message: /question generation.*could not safely accept/is },
+    { code: "daemon_unavailable", message: /local daemon connection was lost during question generation.*outcome is unknown/is },
+    { code: "protocol_mismatch", message: /incompatible question-generation response.*update the daemon and extension together/is },
+    { code: "continuation_unavailable", message: /question generation did not start.*preview expired or was already used/is },
+    { code: "assessment_unavailable", message: /incompatible question-generation response.*update the daemon and extension together/is },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.code, async () => {
+      let questionRequests = 0;
+      const notifications: string[] = [];
+      const client: LearnClient = {
+        async preview() { return continuablePreview(); },
+        async questions() {
+          questionRequests += 1;
+          throw new EvidenceClientError(item.code, `private ${item.code} detail`);
+        },
+      };
+
+      await createLearnCommand(client, "0.84.3")("", assessmentContext(["HEAD"], [], notifications));
+
+      assert.equal(questionRequests, 1);
+      assert.match(notifications.at(-1) ?? "", item.message);
+      assert.match(notifications.at(-1) ?? "", /not retried/i);
+      assert.doesNotMatch(JSON.stringify(notifications), new RegExp(`private ${item.code} detail`));
+    });
+  }
+});
+
+test("maps safe assessment-stage failures to actionable messages without retrying", async (t) => {
+  const cases: Array<{ code: EvidenceClientError["code"]; message: RegExp }> = [
+    { code: "evaluator_unavailable", message: /answer assessment.*runtime is unavailable.*before any provider request/is },
+    { code: "evaluator_failed", message: /answer assessment failed/is },
+    { code: "evaluator_timeout", message: /answer assessment timed out/is },
+    { code: "evaluator_invalid_output", message: /answer assessment.*could not safely accept/is },
+    { code: "daemon_unavailable", message: /local daemon connection was lost during answer assessment.*outcome is unknown/is },
+    { code: "protocol_mismatch", message: /incompatible assessment response.*update the daemon and extension together/is },
+    { code: "assessment_unavailable", message: /answer assessment did not start.*assessment expired or was already submitted/is },
+    { code: "continuation_unavailable", message: /incompatible assessment response.*update the daemon and extension together/is },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.code, async () => {
+      let assessmentRequests = 0;
+      const notifications: string[] = [];
+      const client: LearnClient = {
+        async preview() { return continuablePreview(); },
+        async questions() { return assessableQuestions(); },
+        async assess() {
+          assessmentRequests += 1;
+          throw new EvidenceClientError(item.code, `private ${item.code} detail`);
+        },
+      };
+
+      await createLearnCommand(client, "0.84.3")("", assessmentContext(
+        ["HEAD", "first", "second", "third"],
+        [],
+        notifications,
+      ));
+
+      assert.equal(assessmentRequests, 1);
+      assert.match(notifications.at(-1) ?? "", item.message);
+      assert.match(notifications.at(-1) ?? "", /not retried/i);
+      assert.doesNotMatch(JSON.stringify(notifications), new RegExp(`private ${item.code} detail`));
+    });
+  }
 });
 
 test("warns once when assessment succeeds but local history is unavailable", async () => {

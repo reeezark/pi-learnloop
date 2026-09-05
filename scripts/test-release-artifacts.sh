@@ -250,13 +250,31 @@ const {spawn} = require('node:child_process');
 const [root] = process.argv.slice(2);
 const fixtureHome = path.join(root, 'smoke-home');
 const fakeTools = path.join(root, 'smoke-tools');
+const fakePackage = path.join(root, 'smoke-pi-package');
 const calls = path.join(root, 'smoke-pi-calls');
 fs.mkdirSync(fixtureHome, {mode: 0o700});
 fs.mkdirSync(fakeTools, {mode: 0o700});
-fs.writeFileSync(path.join(fakeTools, 'pi'), '#!/bin/sh\n' +
+for (const relative of ['dist/index.js', 'dist/core/settings-manager.js',
+  'dist/core/http-dispatcher.js', 'dist/core/provider-attribution.js']) {
+  const file = path.join(fakePackage, relative);
+  fs.mkdirSync(path.dirname(file), {recursive: true, mode: 0o700});
+  fs.writeFileSync(file, 'export {};\n', {mode: 0o600});
+}
+const fakePi = path.join(fakePackage, 'dist/bundle/cli.js');
+fs.mkdirSync(path.dirname(fakePi), {recursive: true, mode: 0o700});
+fs.writeFileSync(fakePi, '#!/bin/sh\n' +
   'if [ "$#" = 1 ] && [ "$1" = --version ]; then\n' +
   '  printf "version\\n" >> "$PI_LEARNLOOP_TEST_CALLS"\n  printf "0.84.3\\n"\n  exit 0\nfi\n' +
   'printf "unexpected\\n" >> "$PI_LEARNLOOP_TEST_CALLS"\nexit 1\n', {mode: 0o755});
+fs.writeFileSync(path.join(fakePackage, 'package.json'), JSON.stringify({
+  name: '@earendil-works/pi-coding-agent', version: '0.84.3', type: 'module',
+  main: './dist/index.js', bin: {pi: './dist/bundle/cli.js'},
+}), {mode: 0o600});
+fs.symlinkSync(fakePi, path.join(fakeTools, 'pi'));
+fs.writeFileSync(path.join(fakeTools, 'node'), '#!/bin/sh\n' +
+  'if [ "$#" = 1 ] && [ "$1" = --version ]; then printf "v22.19.0\\n"; exit 0; fi\n' +
+  'IFS= read -r request || exit 1\n' +
+  'printf "{\\"schema_version\\":1,\\"status\\":\\"ready\\"}\\n"\n', {mode: 0o755});
 // Only the child uses a fresh HOME. No real Pi, credential, or user state is reachable.
 const child = spawn(path.join(root, 'native'), ['daemon'], {cwd: fixtureHome,
   env: {HOME: fixtureHome, PATH: fakeTools + ':/usr/bin:/bin', PI_LEARNLOOP_TEST_CALLS: calls},
@@ -330,14 +348,14 @@ function request(base, route, method = 'GET', headers = {}) {
     // Authentication succeeds, but an empty JSON request is still rejected before evaluation.
     assert.equal((await request(descriptor.base_url, '/v1/evidence-previews', 'POST',
       {Authorization: 'PiLearnLoop ' + token, 'Content-Type': 'application/json'})).status, 400);
-    assert.equal(fs.readFileSync(calls, 'utf8'), 'version\nversion\n', 'only two Pi version preflights are allowed');
+    assert.equal(fs.readFileSync(calls, 'utf8'), 'version\n', 'only one shared Pi version preflight is allowed');
     child.kill('SIGTERM');
     const result = await finished;
     assert.deepEqual(result, {code: 0, signal: null});
     assert.ok(!interrupted, 'smoke test interrupted');
     assert.equal(outputBytes, 0, 'daemon unexpectedly emitted output');
     assert.ok(!fs.existsSync(descriptorFile) && !fs.existsSync(path.join(state, 'daemon.token')), 'runtime cleanup failed');
-    assert.equal(fs.readFileSync(calls, 'utf8'), 'version\nversion\n');
+    assert.equal(fs.readFileSync(calls, 'utf8'), 'version\n');
     console.log(`ok - native ${process.arch} foreground daemon, protected discovery/auth/status, fake Pi, SIGTERM cleanup`);
   } finally {
     if (!closed) child.kill('SIGKILL');

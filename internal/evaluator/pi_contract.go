@@ -20,35 +20,14 @@ type ModelSelection struct {
 	ThinkingLevel string
 }
 
-// BuildPiArguments returns the fixed Pi 0.84.3 isolation arguments. It does
-// not resolve an executable, spawn a process, inspect credentials, or call a
-// provider.
-func BuildPiArguments(selection ModelSelection, systemPrompt string) ([]string, error) {
-	if err := ValidateModelSelection(selection); err != nil {
-		return nil, err
-	}
+func validateSystemPrompt(systemPrompt string) error {
 	if strings.TrimSpace(systemPrompt) == "" || !utf8.ValidString(systemPrompt) {
-		return nil, invalidInput(errors.New("system prompt must be non-empty valid UTF-8"))
+		return invalidInput(errors.New("system prompt must be non-empty valid UTF-8"))
 	}
 	if len(systemPrompt) > MaxSystemPromptBytes {
-		return nil, invalidInput(fmt.Errorf("system prompt exceeds %d bytes", MaxSystemPromptBytes))
+		return invalidInput(fmt.Errorf("system prompt exceeds %d bytes", MaxSystemPromptBytes))
 	}
-
-	return []string{
-		"--mode", "rpc",
-		"--no-session",
-		"--no-tools",
-		"--no-extensions",
-		"--no-skills",
-		"--no-prompt-templates",
-		"--no-themes",
-		"--no-context-files",
-		"--no-approve",
-		"--system-prompt", systemPrompt,
-		"--provider", selection.Provider,
-		"--model", selection.ModelID,
-		"--thinking", selection.ThinkingLevel,
-	}, nil
+	return nil
 }
 
 // ValidateModelSelection applies the same non-secret Pi 0.84.3 model contract

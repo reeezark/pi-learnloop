@@ -48,24 +48,15 @@ func TestPiRPCAssessmentEvaluatorEvaluateAssessment(t *testing.T) {
 		assertFakeProcessGone(t, fake.pidPath)
 
 		arguments := readFakeArguments(t, fake.argumentsPath)
-		wantArguments, err := BuildPiArguments(selection, prompts.EvaluatorAnswerAssessmentV1())
-		if err != nil {
-			t.Fatalf("BuildPiArguments(): %v", err)
-		}
-		if strings.Join(arguments, "\x00") != strings.Join(wantArguments, "\x00") {
-			t.Fatalf("arguments = %#v, want %#v", arguments, wantArguments)
-		}
 		for _, argument := range arguments {
 			if strings.Contains(argument, "synthetic source") || strings.Contains(argument, "first answer") {
 				t.Fatalf("argv contains source or an answer: %#v", arguments)
 			}
 		}
-
-		commands := readFakeCommands(t, fake.commandsPath)
-		assertRPCCommandSequence(t, commands)
-		message, ok := commands[3]["message"].(string)
-		if !ok {
-			t.Fatalf("prompt message = %#v, want string", commands[3]["message"])
+		request := readFakeWorkerRequest(t, fake.requestsPath, 1)
+		message := request.Message
+		if request.SystemPrompt != prompts.EvaluatorAnswerAssessmentV1() || request.Model == nil || request.Model.Provider != selection.Provider {
+			t.Fatalf("worker request = %#v, want exact assessment prompt and model", request)
 		}
 		var sent AssessmentInput
 		if err := json.Unmarshal([]byte(message), &sent); err != nil {
@@ -99,15 +90,9 @@ func TestPiRPCAssessmentEvaluatorEvaluateAssessment(t *testing.T) {
 		if got := len(strings.Fields(string(starts))); got != 2 {
 			t.Fatalf("assessment process starts = %d, want 2", got)
 		}
-		commands := readFakeCommands(t, fake.commandsPath)
-		if len(commands) != 10 {
-			t.Fatalf("command count = %d, want 10 across two isolated turns", len(commands))
-		}
-		assertRPCCommandSequence(t, commands[:5])
-		assertRPCCommandSequence(t, commands[5:])
+		request := readFakeWorkerRequest(t, fake.requestsPath, 2)
 		var sent AssessmentInput
-		message, _ := commands[8]["message"].(string)
-		if err := json.Unmarshal([]byte(message), &sent); err != nil || sent.Stage != AssessmentStageFollowUpAnswer || sent.FollowUp == nil || sent.FollowUp.Answer == "" {
+		if err := json.Unmarshal([]byte(request.Message), &sent); err != nil || sent.Stage != AssessmentStageFollowUpAnswer || sent.FollowUp == nil || sent.FollowUp.Answer == "" {
 			t.Fatalf("second prompt = %#v, want exact follow-up input (error = %v)", sent, err)
 		}
 		assertFakeProcessGone(t, fake.pidPath)
@@ -121,7 +106,6 @@ func TestPiRPCAssessmentEvaluatorEvaluateAssessment(t *testing.T) {
 		{name: "rejects malformed assistant JSON", scenario: "assessment_invalid_output", contract: ContractErrorInvalidOutput},
 		{name: "rejects an unknown assessment field", scenario: "assessment_invalid_schema", contract: ContractErrorInvalidOutput},
 		{name: "rejects an unknown evidence reference", scenario: "assessment_unknown_reference", contract: ContractErrorInvalidOutput},
-		{name: "enforces the assessment output cap", scenario: "assessment_oversized_output", contract: ContractErrorInvalidOutput},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fake := installFakePi(t, test.scenario)
@@ -133,15 +117,20 @@ func TestPiRPCAssessmentEvaluatorEvaluateAssessment(t *testing.T) {
 		})
 	}
 
+	t.Run("enforces the final assistant-text cap before schema parsing", func(t *testing.T) {
+		fake := installFakePi(t, "assessment_oversized_output")
+		_, err := mustNewFakeAssessmentEvaluator(t).EvaluateAssessment(context.Background(), syntheticInitialAssessmentInput(t), selection)
+		assertOpaqueRPCFailure(t, err)
+		assertFakeProcessGone(t, fake.pidPath)
+	})
+
 	for _, test := range []struct {
 		name     string
 		scenario string
 	}{
-		{name: "rejects a mismatched response id", scenario: "wrong_id"},
 		{name: "rejects invalid RPC JSON", scenario: "invalid_json"},
-		{name: "rejects discovered commands", scenario: "commands_present"},
-		{name: "rejects a tool event", scenario: "tool_event"},
-		{name: "rejects an unknown event", scenario: "unknown_update"},
+		{name: "rejects an extra response frame", scenario: "extra_frame"},
+		{name: "rejects an unknown response shape", scenario: "unknown_response"},
 		{name: "keeps child authentication errors opaque", scenario: "auth_failure"},
 		{name: "enforces the stdout cap", scenario: "stdout_cap"},
 		{name: "enforces the stderr cap", scenario: "stderr_cap"},
@@ -254,20 +243,4 @@ func syntheticInitialAssessmentInput(t *testing.T) AssessmentInput {
 		t.Fatalf("NewInitialAssessmentInput(): %v", err)
 	}
 	return assessmentInput
-}
-
-func assertRPCCommandSequence(t *testing.T, commands []map[string]any) {
-	t.Helper()
-	if len(commands) != 5 {
-		t.Fatalf("command count = %d, want 5", len(commands))
-	}
-	want := []string{"set_auto_retry", "set_auto_compaction", "get_commands", "prompt", "get_last_assistant_text"}
-	for index, command := range commands {
-		if command["type"] != want[index] {
-			t.Fatalf("command %d type = %#v, want %q", index, command["type"], want[index])
-		}
-	}
-	if commands[0]["enabled"] != false || commands[1]["enabled"] != false {
-		t.Fatalf("setup commands = %#v, want retry and compaction disabled", commands[:2])
-	}
 }

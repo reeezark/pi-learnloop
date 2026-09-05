@@ -1,13 +1,24 @@
 ---
 id: release-ready-macos-distribution
-status: active
+status: superseded
 risk: high
-current_phase: 2
-phase_status: in_progress
-updated: 2026-09-04
+current_phase: 3
+phase_status: blocked
+updated: 2026-09-05
 ---
 
 # Release-Ready macOS Distribution
+
+## Scope Update: Personal Local Use
+
+On 2026-09-04 the user clarified that the product is for their own development
+environment as a Pi extension; on 2026-09-05 they requested continued repair
+until it is usable. This public-distribution plan is therefore superseded, not
+complete. Preserve the completed Phase 1/2 implementation and CI evidence.
+Unimplemented signing, notarization, npm publication and Phase 3 prerequisites
+are not blockers for the current local-use goal and must not be pursued under
+the old authorization. The current repair design is
+`plans/isolated-pi-model-runtime.md`, with its own high-risk phase gates.
 
 ## 1. Goal
 
@@ -610,9 +621,27 @@ Successful signed-tag verification and privileged workflow implementation move
 to Phase 3, where tag creation can be separately authorized. GitHub requires a
 manually dispatched workflow to exist on the default branch.
 See <https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow>.
-The current recovery record is
+The Phase 2 verification record is
 `docs/checkpoints/release-ready-macos-distribution-phase-2.md`. No tag, approval
 rule, credential, or publication authority is created by this exception.
+
+The read-only implementation was installed as `2337f1b`, followed by the scoped
+GitHub context fix `dd91d494f2fbf96dd0745f36150ef92c02466fec`; both were pushed
+to main on 2026-09-04. All local verification passed. The corrected native run
+<https://github.com/reeezark/pi-learnloop/actions/runs/33846613156> succeeded.
+The maintainer supplied manual bootstrap run
+<https://github.com/reeezark/pi-learnloop/actions/runs/33847304094> for that exact
+main SHA on 2026-09-04. Phase 2 is complete: both runs succeeded with both native
+lanes passed, both artifact queries returned empty lists, and final run summaries
+show no artifacts. Both manual native logs were retrieved and inspected after
+transient connector failures. They confirm exact toolchains, complete suites,
+clean source/binary provenance, repeat-built hashes, native diagnostic/foreground
+smoke, and final checkout cleanliness. Actual manual platforms were ARM64 macOS
+15.7.7 (24G720), image `20260727.0256.1`, and Intel macOS 15.7.9 (24G830),
+image `20260824.0482.1`; macOS 13 was not executed. The checkpoint records exact
+run/job URLs, digests, and the earlier failed installation run. The three
+closeout documents remain uncommitted; no Phase 3 implementation or external
+publication is authorized by successful Phase 2 verification.
 
 - Add ordinary least-privilege CI for exact Go/Node toolchains, Go/extension/
   governance suites, npm allowlist, and release-script tests.
@@ -642,6 +671,17 @@ rule, credential, or publication authority is created by this exception.
 Prerequisite: Phase 2 is committed, all external prerequisites are confirmed,
 the exact release version is chosen, and the user explicitly authorizes Phase 3
 including the named external GitHub/npm mutations.
+
+The user explicitly authorized Phase 3 on 2026-09-04. This resolves the phase
+authorization gate, not the outstanding release-version, identity, account,
+credential-availability, or clean-source prerequisites. No implementation or
+external publication has started. Phase 2 closeout documents remain uncommitted
+and their commit/push direction must be resolved before the clean-source gate.
+After validating approved/authorized metadata, the startup gate paused Phase 3
+as blocked pending those decisions. The current recovery record is
+`docs/checkpoints/release-ready-macos-distribution-phase-3.md`. Do not treat the
+manifest's `0.1.0` as an authorized first release, infer a signer/reviewer, or
+replace the accepted signed/notarized/OIDC gates with an unsigned/token fallback.
 
 - Implement and verify the deferred signed-tag eligibility, protected
   signing/notary, OIDC, and controlled publication jobs. The read-only bootstrap
@@ -803,8 +843,9 @@ including the named external GitHub/npm mutations.
 ## 14. Open Questions
 
 - Confirmed on 2026-09-04: <https://github.com/reeezark/pi-learnloop> is visibly
-  public when viewed without signing in. The public Actions page has no workflow
-  execution evidence. Public visibility alone does not prove authenticated
+  public when viewed without signing in. At that initial inspection the Actions
+  page had no workflow execution evidence; completed Phase 2 runs are now recorded
+  above. Public visibility alone does not prove authenticated
   Actions policy, account eligibility, or npm trusted-publisher configuration.
 - Confirmed on 2026-09-04: the user approved the read-only reviewed-commit
   bootstrap and initial workflow commit/push/run sequence. Successful signed-tag
