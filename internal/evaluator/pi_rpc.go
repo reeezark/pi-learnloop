@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -426,7 +427,18 @@ func (evaluator *PiRPCEvaluator) Evaluate(ctx context.Context, input Input, sele
 	if len(assistantText) > MaxQuestionSetBytes {
 		return QuestionSet{}, invalidOutput("question-set output exceeds %d bytes", MaxQuestionSetBytes)
 	}
-	return ParseQuestionSet([]byte(assistantText), references)
+	questions, err := ParseQuestionSet([]byte(assistantText), references)
+	if err != nil {
+		return QuestionSet{}, err
+	}
+	if input.SchemaVersion == InputSchemaVersionV2 {
+		for _, question := range questions.Questions {
+			if !containsHan(question.Text) {
+				return QuestionSet{}, invalidOutput("question %s must contain Han text", question.ID)
+			}
+		}
+	}
+	return questions, nil
 }
 
 func (evaluator *PiRPCAssessmentEvaluator) EvaluateAssessment(ctx context.Context, input AssessmentInput, selection ModelSelection) (AssessmentTurn, error) {
@@ -454,7 +466,14 @@ func (evaluator *PiRPCAssessmentEvaluator) EvaluateAssessment(ctx context.Contex
 	if len(assistantText) > MaxAssessmentTurnBytes {
 		return AssessmentTurn{}, invalidOutput("assessment output exceeds %d bytes", MaxAssessmentTurnBytes)
 	}
-	return ParseAssessmentTurn([]byte(assistantText), input)
+	turn, err := ParseAssessmentTurn([]byte(assistantText), input)
+	if err != nil {
+		return AssessmentTurn{}, err
+	}
+	if input.SchemaVersion == AssessmentInputSchemaVersionV2 && turn.FollowUp != nil && !containsHan(turn.FollowUp.Text) {
+		return AssessmentTurn{}, invalidOutput("follow-up question F1 must contain Han text")
+	}
+	return turn, nil
 }
 
 func evaluatePiModel(ctx context.Context, runtime piModelRuntime, systemPrompt string, message []byte, selection ModelSelection) (string, error) {
@@ -513,6 +532,15 @@ func (evaluator *PiRPCAssessmentEvaluator) assessmentPrompt(schemaVersion int) (
 
 func inputReferences(input Input) ([]string, error) {
 	return runtimeInputReferences(input)
+}
+
+func containsHan(text string) bool {
+	for _, current := range text {
+		if unicode.Is(unicode.Han, current) {
+			return true
+		}
+	}
+	return false
 }
 
 func evaluationError(ctx context.Context, workerError error) error {

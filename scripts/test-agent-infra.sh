@@ -157,6 +157,8 @@ expect_fail "invalid JSON is rejected" "$invalid_json_root"
 missing_category_root=$(new_fixture missing-eval-category)
 rm -f "$missing_category_root/agent/evals/cases/prompt-injection-in-evidence.json"
 rm -f "$missing_category_root/agent/evals/cases/question-generation-injection.json"
+rm -f "$missing_category_root/agent/evals/cases/question-generation-simplified-chinese.json"
+rm -f "$missing_category_root/agent/evals/cases/assessment-follow-up-simplified-chinese.json"
 expect_fail "all eval categories are required" "$missing_category_root"
 
 invalid_case_version_root=$(new_fixture invalid-case-version)

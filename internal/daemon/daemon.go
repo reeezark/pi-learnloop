@@ -65,8 +65,8 @@ func Run(ctx context.Context, config Config) error {
 	var assessmentEvaluator evaluator.AssessmentEvaluator
 	if questions, assessments, err := evaluator.NewVersionedPiModelEvaluators(
 		ctx,
-		prompts.EvaluatorQuestionGenerationV1(), prompts.EvaluatorQuestionGenerationV2(),
-		prompts.EvaluatorAnswerAssessmentV1(), prompts.EvaluatorAnswerAssessmentV2(),
+		prompts.EvaluatorQuestionGenerationV1(), prompts.EvaluatorQuestionGenerationV2SimplifiedChinese(),
+		prompts.EvaluatorAnswerAssessmentV1(), prompts.EvaluatorAnswerAssessmentV2SimplifiedChinese(),
 	); err == nil {
 		questionEvaluator = questions
 		assessmentEvaluator = assessments

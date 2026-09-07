@@ -32,6 +32,8 @@ The question-generation and answer-assessment seams each have a narrow determini
 | Go-context policy | `go-context-evidence` | `1.0.0` | Additive local-only, previewed-evidence rules for enriched inputs |
 | Enriched question prompt | `evaluator-question-generation` | `2.0.0` | Three-question generation from changed and bounded Go-context evidence |
 | Enriched assessment prompt | `evaluator-answer-assessment` | `2.0.0` | Answer assessment against changed and bounded Go-context evidence |
+| Current enriched question prompt | `evaluator-question-generation` | `2.1.0` | Simplified-Chinese Q1/Q2/Q3 from changed and bounded Go-context evidence |
+| Current enriched assessment prompt | `evaluator-answer-assessment` | `2.1.0` | Existing assessment rubric with Simplified-Chinese F1 prose |
 
 The runtime schema identifiers `evidence-bundle@1`, `evidence-bundle@2`,
 `evaluator-input@1`, `evaluator-input@2`, `evaluator-question-set@1`,
@@ -54,6 +56,10 @@ intentionally distinct from development eval-case and run-record schemas.
 - Development schemas do not become runtime product protocols without an explicit compatibility review.
 - Runtime question output is accepted only after deterministic shape, size, UTF-8, duplicate-key, and evidence-reference validation.
 - Runtime assessment output permits one F1 only at the initial stage or exactly three ordered verdicts; the public label is derived deterministically in Go.
+- Production v2 Q1/Q2/Q3 and any F1 must each contain a Unicode Han rune after
+  structural validation. This dependency-free floor rejects all-English output
+  but does not distinguish Simplified Chinese from every other Han-script
+  language; v1 parsing and final feedback remain language-neutral.
 
 ## Validation
 

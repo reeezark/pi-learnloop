@@ -27,6 +27,12 @@ var evaluatorQuestionGenerationV2 string
 //go:embed evaluator-answer-assessment/v2.0.0.md
 var evaluatorAnswerAssessmentV2 string
 
+//go:embed evaluator-question-generation/v2.1.0.md
+var evaluatorQuestionGenerationV2SimplifiedChinese string
+
+//go:embed evaluator-answer-assessment/v2.1.0.md
+var evaluatorAnswerAssessmentV2SimplifiedChinese string
+
 // EvaluatorQuestionGenerationV1 returns the exact released prompt asset.
 func EvaluatorQuestionGenerationV1() string {
 	return evaluatorQuestionGenerationV1
@@ -67,6 +73,30 @@ func EvaluatorAnswerAssessmentV2() string {
 // EvaluatorAnswerAssessmentV2Metadata returns the immutable enriched assessment prompt identity.
 func EvaluatorAnswerAssessmentV2Metadata() Metadata {
 	return metadata("evaluator-answer-assessment", "2.0.0", evaluatorAnswerAssessmentV2)
+}
+
+// EvaluatorQuestionGenerationV2SimplifiedChinese returns the exact released
+// enriched-evidence prompt that requires Simplified-Chinese question prose.
+func EvaluatorQuestionGenerationV2SimplifiedChinese() string {
+	return evaluatorQuestionGenerationV2SimplifiedChinese
+}
+
+// EvaluatorQuestionGenerationV2SimplifiedChineseMetadata returns the immutable
+// Simplified-Chinese enriched prompt identity.
+func EvaluatorQuestionGenerationV2SimplifiedChineseMetadata() Metadata {
+	return metadata("evaluator-question-generation", "2.1.0", evaluatorQuestionGenerationV2SimplifiedChinese)
+}
+
+// EvaluatorAnswerAssessmentV2SimplifiedChinese returns the exact released
+// enriched assessment prompt that requires Simplified-Chinese F1 prose.
+func EvaluatorAnswerAssessmentV2SimplifiedChinese() string {
+	return evaluatorAnswerAssessmentV2SimplifiedChinese
+}
+
+// EvaluatorAnswerAssessmentV2SimplifiedChineseMetadata returns the immutable
+// Simplified-Chinese enriched assessment prompt identity.
+func EvaluatorAnswerAssessmentV2SimplifiedChineseMetadata() Metadata {
+	return metadata("evaluator-answer-assessment", "2.1.0", evaluatorAnswerAssessmentV2SimplifiedChinese)
 }
 
 func metadata(id, version, content string) Metadata {

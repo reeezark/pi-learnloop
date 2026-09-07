@@ -66,3 +66,12 @@ schema. They cover:
 These cases constrain `evaluator-input@2` and
 `evaluator-assessment-input@2`. They do not change the v1 question-set or
 assessment-turn output contracts.
+
+## Simplified-Chinese question coverage
+
+The enriched v2.1.0 prompt cases also cover English-only instructions embedded
+in evidence or answers. Expected Q1/Q2/Q3 and F1 prose remains Simplified
+Chinese while Go identifiers, fixed IDs, and evidence references are preserved.
+Production adapter tests separately reject a zero-Han v2 question or F1 without
+repair or retry. The Han check is an honest minimum, not a complete
+Simplified-versus-Traditional/Japanese/Korean classifier.

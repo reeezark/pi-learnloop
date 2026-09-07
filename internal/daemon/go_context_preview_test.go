@@ -215,8 +215,12 @@ func TestV2ContinuationCarriesExactEvidenceThroughAssessmentAndSourceFreeHistory
 	if err != nil || len(records) != 1 {
 		t.Fatalf("history.List() = (%#v, %v), want one source-free record", records, err)
 	}
-	if records[0].Start.QuestionPrompt.Version != "2.0.0" || records[0].Start.AssessmentPrompt.Version != "2.0.0" {
-		t.Fatalf("history prompt provenance = (%#v, %#v), want v2", records[0].Start.QuestionPrompt, records[0].Start.AssessmentPrompt)
+	questionPrompt := prompts.EvaluatorQuestionGenerationV2SimplifiedChineseMetadata()
+	assessmentPrompt := prompts.EvaluatorAnswerAssessmentV2SimplifiedChineseMetadata()
+	wantQuestionPrompt := history.PromptProvenance{ID: questionPrompt.ID, Version: questionPrompt.Version, SHA256: questionPrompt.SHA256}
+	wantAssessmentPrompt := history.PromptProvenance{ID: assessmentPrompt.ID, Version: assessmentPrompt.Version, SHA256: assessmentPrompt.SHA256}
+	if records[0].Start.QuestionPrompt != wantQuestionPrompt || records[0].Start.AssessmentPrompt != wantAssessmentPrompt {
+		t.Fatalf("history prompt provenance = (%#v, %#v), want v2.1.0", records[0].Start.QuestionPrompt, records[0].Start.AssessmentPrompt)
 	}
 	encodedHistory, _ := json.Marshal(records)
 	if bytes.Contains(encodedHistory, []byte(piSessionID)) || bytes.Contains(encodedHistory, []byte("func Build")) || bytes.Contains(encodedHistory, []byte("example.com/context-preview")) {
@@ -226,7 +230,7 @@ func TestV2ContinuationCarriesExactEvidenceThroughAssessmentAndSourceFreeHistory
 	if err != nil || !reflect.DeepEqual(reviewed, []string{piSessionID}) {
 		t.Fatalf("ReviewedPiSessionIDs() = (%v, %v), want completion-only Session provenance", reviewed, err)
 	}
-	if strings.Contains(prompts.EvaluatorQuestionGenerationV2(), piSessionID) || strings.Contains(prompts.EvaluatorAnswerAssessmentV2(), piSessionID) {
+	if strings.Contains(prompts.EvaluatorQuestionGenerationV2SimplifiedChinese(), piSessionID) || strings.Contains(prompts.EvaluatorAnswerAssessmentV2SimplifiedChinese(), piSessionID) {
 		t.Fatal("v2 prompt contains Pi Session ID")
 	}
 }

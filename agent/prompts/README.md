@@ -38,6 +38,13 @@ Allowed prompt states are `draft | released | deprecated`.
 | `evaluator-answer-assessment` | `1.0.0` | `evaluator-assessment-input@1` | `evaluator-assessment-turn@1` |
 | `evaluator-question-generation` | `2.0.0` | `evaluator-input@2` | `evaluator-question-set@1` |
 | `evaluator-answer-assessment` | `2.0.0` | `evaluator-assessment-input@2` | `evaluator-assessment-turn@1` |
+| `evaluator-question-generation` | `2.1.0` | `evaluator-input@2` | `evaluator-question-set@1` |
+| `evaluator-answer-assessment` | `2.1.0` | `evaluator-assessment-input@2` | `evaluator-assessment-turn@1` |
+
+The enriched production path selects v2.1.0. Those prompts require
+Simplified-Chinese prose for Q1/Q2/Q3 and F1 while preserving code identifiers,
+technical terms, fixed IDs, JSON fields, and evidence references. The v2.0.0
+assets remain immutable historical releases.
 
 ## Version Rules
 

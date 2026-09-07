@@ -406,12 +406,23 @@ func fakeAssistantText(scenario, message string) string {
 		if scenario == "invalid_output" {
 			return "not-json"
 		}
+		if scenario == "chinese_questions" {
+			return syntheticChineseQuestionSetJSON()
+		}
+		if strings.HasSuffix(scenario, "_english") {
+			return syntheticQuestionSetWithOneEnglishQuestion(scenario)
+		}
 		return syntheticQuestionSetJSON()
 	}
 	switch scenario {
 	case "assessment_follow_up":
 		if stage == AssessmentStageInitialAnswers {
 			return syntheticAssessmentFollowUpJSON()
+		}
+		return syntheticAssessmentCompleteJSON()
+	case "assessment_chinese_follow_up":
+		if stage == AssessmentStageInitialAnswers {
+			return syntheticChineseAssessmentFollowUpJSON()
 		}
 		return syntheticAssessmentCompleteJSON()
 	case "assessment_invalid_output":
@@ -464,8 +475,30 @@ func syntheticQuestionSetJSON() string {
 	return `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"What behavior changed?","evidence_references":["E001"]},{"id":"Q2","kind":"code_specific","text":"Which boundary matters?","evidence_references":["E001"]},{"id":"Q3","kind":"go_backend","text":"How would a Go test cover this?","evidence_references":[]}]}`
 }
 
+func syntheticChineseQuestionSetJSON() string {
+	return `{"schema_version":1,"disposition":"questions","questions":[{"id":"Q1","kind":"code_specific","text":"这项变更改变了什么行为？","evidence_references":["E001"]},{"id":"Q2","kind":"code_specific","text":"哪个边界条件最重要？","evidence_references":["E001"]},{"id":"Q3","kind":"go_backend","text":"应如何用 Go 测试覆盖这个行为？","evidence_references":[]}]}`
+}
+
+func syntheticQuestionSetWithOneEnglishQuestion(scenario string) string {
+	result := syntheticChineseQuestionSetJSON()
+	switch scenario {
+	case "q1_english":
+		return strings.Replace(result, "这项变更改变了什么行为？", "What behavior changed?", 1)
+	case "q2_english":
+		return strings.Replace(result, "哪个边界条件最重要？", "Which boundary matters?", 1)
+	case "q3_english":
+		return strings.Replace(result, "应如何用 Go 测试覆盖这个行为？", "How would a Go test cover this?", 1)
+	default:
+		return result
+	}
+}
+
 func syntheticAssessmentFollowUpJSON() string {
 	return `{"schema_version":1,"disposition":"follow_up","follow_up":{"id":"F1","target_question_id":"Q1","text":"Which exact branch supports your first answer?","evidence_references":["E001"]},"evaluations":[]}`
+}
+
+func syntheticChineseAssessmentFollowUpJSON() string {
+	return `{"schema_version":1,"disposition":"follow_up","follow_up":{"id":"F1","target_question_id":"Q1","text":"哪个具体分支支持你的第一个回答？","evidence_references":["E001"]},"evaluations":[]}`
 }
 
 func syntheticAssessmentCompleteJSON() string {

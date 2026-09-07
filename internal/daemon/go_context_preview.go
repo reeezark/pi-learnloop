@@ -31,7 +31,7 @@ func evaluatorInputForContinuation(retained continuationValue) (evaluator.Input,
 			return evaluator.Input{}, prompts.Metadata{}, prompts.Metadata{}, err
 		}
 		input, err := evaluator.NewInputV2(bundle)
-		return input, prompts.EvaluatorQuestionGenerationV2Metadata(), prompts.EvaluatorAnswerAssessmentV2Metadata(), err
+		return input, prompts.EvaluatorQuestionGenerationV2SimplifiedChineseMetadata(), prompts.EvaluatorAnswerAssessmentV2SimplifiedChineseMetadata(), err
 	default:
 		return evaluator.Input{}, prompts.Metadata{}, prompts.Metadata{}, errors.New("unsupported continuation evidence contract")
 	}
